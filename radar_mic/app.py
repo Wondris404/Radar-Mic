@@ -2,6 +2,8 @@
 import argparse
 import math
 import sys
+import tempfile
+from pathlib import Path
 from datetime import datetime, timezone
 from time import monotonic
 from PySide6.QtCore import Qt, QTimer, QPointF
@@ -338,7 +340,7 @@ def main():
     window = Window(args.demo or args.smoke_test); window.show()
     if args.smoke_test:
         QTimer.singleShot(600, lambda: window.sim.event("MAYDAY"))
-        QTimer.singleShot(1300, lambda: window.grab().save("/tmp/radar-mic-smoke.png"))
+        QTimer.singleShot(1300, lambda: window.grab().save(str(Path(tempfile.gettempdir()) / "radar-mic-smoke.png")))
         QTimer.singleShot(1500, app.quit)
     return app.exec()
 

@@ -63,7 +63,7 @@ Copy `radar-mic-ground.hex` to ground's MICROBIT drive and
 `radar-mic-aircraft.hex` to aircraft's drive. Firmware source is included in the
 MakeCode HEX files. Downloading Actions artifacts requires a GitHub login.
 
-To compile locally, install Node.js 22+ and Git:
+To compile locally, install Node.js 24+ (npm 11+) and Git:
 
 ```powershell
 npm ci --prefix tools --ignore-scripts
@@ -74,7 +74,9 @@ node scripts/build-firmware.cjs
 Output: `dist/firmware/*.hex`. The build script uses pinned MakeCode target 9.1.2,
 installs built-in dependencies, and fetches the exact pinned Sonar:bit revision
 via Git. No external radio module or native C++ toolchain is required for the
-standard cached MakeCode runtime. Internet access is required on the first build.
+standard cached MakeCode runtime. Internet access is required on the first build. The tooling lockfile unifies the
+unused Puppeteer browser dependency across MakeCode packages; install scripts are
+disabled because firmware compilation needs no browser download.
 `firmware/shared.ts` is the source of the identical two `radio.ts` copies; update
 all three together (tests enforce equality).
 
