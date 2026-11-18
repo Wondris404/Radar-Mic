@@ -2,7 +2,9 @@
 
 ## USB serial v2
 
-Use the matching v2 desktop app and ground firmware. The radio format is still v1.
+Use the desktop app and both firmware images from the same build. USB remains
+at v2. Radio v2 expands the message identifier and changes the probe prefix.
+A board running the older radio format cannot establish a radio v2 link.
 The link uses 115200 baud, 8N1 and ASCII. The desktop sends LF and the ground sends
 CRLF. One record is `2|TYPE|id|field[|field...]`. The ground emits the record and
 its terminator in a single `serial.writeString` call because MakeCode
@@ -25,7 +27,7 @@ contain padding.
 |---|---|---|
 | HELLO | GROUND01,47 | USB compatibility and radio group |
 | HEART | GROUND01,boot_id,uptime_ms | Ground heartbeat every 2 seconds |
-| SONAR | VALID/NO_TARGET/OFF/FAULT,cm | VALID is 2–400; other states use 0 |
+| SONAR | VALID/NO_TARGET/OFF/FAULT,cm | VALID is 4–400 cm; other states use 0 |
 | LINK | AIR101,UP/LOST,rssi | Latest link state; RSSI -128 means unknown |
 | EVENT | AIR101,POSITION/LANDING/MAYDAY,rssi | Aircraft button event and ground RSSI |
 | RTT | OK/LOST,milliseconds,rssi | Probe outcome; LOST uses a 0 ms placeholder |
@@ -34,8 +36,9 @@ contain padding.
 
 PC command IDs are 32 lowercase hex digits generated from fresh UUIDv4 values.
 ACK and ERROR echo the ID. Unattributed errors and periodic telemetry use
-`0000`. EVENT, RTT and LINK can carry a four-digit radio packet ID. Logs use
-UTC receipt time.
+`0000`. EVENT and LINK from radio data carry the low 16 bits of the 48-bit
+radio ID as a diagnostic hint. RTT and probe LINK records carry the four-hex
+probe ID. Logs use UTC receipt time.
 
 ```text
 2|HELLO|0000|GROUND01|47
@@ -63,8 +66,11 @@ unconfirmed outcome after 12 seconds from its original send, even if the UI
 timer was delayed. This leaves headroom for board processing and does not
 require synchronizing wall clocks.
 
-The PC tracks up to eight commands with up to three USB attempts spaced four
-seconds apart. The board caches up to 32 commands and results for 30 seconds.
+The PC tracks up to eight commands. TEXT and CANCEL can make three USB
+attempts, four seconds apart. The desktop sends SCAN, THRESH and PING once
+because they lack a ground boot ID. A changed boot ID invalidates outstanding
+desktop commands even if the USB port is still open. The board caches up to 32
+commands and results for 30 seconds.
 Identical retries replay cached results without applying commands again.
 Conflicting reuse returns ID_CONFLICT. Cancellation reuses the TEXT ID and boot
 ID. The board removes queued work or stops remaining fragments, remembers the
@@ -80,7 +86,7 @@ mean receipt is unconfirmed. CANCELLED confirms no further attempts on the
 ground; an already transmitted packet can still have been received. A late
 reply is logged with its actual outcome.
 
-## Built-in radio
+## Built-in radio v2
 
 Both devices: **group 47, frequency band 7, transmit power 6**. Change GROUP and
 setFrequencyBand in `firmware/shared.ts`, copy it to both projects' `radio.ts`,
@@ -96,30 +102,40 @@ packets are not globally addressed. Do not run multiple aircraft on this group.
 
 Every sendString is **≤19 ASCII characters**:
 
-* Data: `Dhhhhit<payload>`: D, 4-hex ID, decimal index 0–7, count 1–8,
-  then 1–12 characters. All non-final fragments have 12 characters.
-* Full-message ACK: `Khhhh`.
-* Independent RTT request: `Phhhh`; immediate aircraft reply: `Qhhhh`.
+* Data: `Drrrrrrrrit<payload>`. The eight-character ID is base64url for six
+  bytes. `i` is a lowercase hexadecimal index (0–b) and `t` is the fragment
+  count (1–c). Every non-final fragment is eight ASCII bytes, and the final
+  fragment carries one to eight bytes.
+* Full-message ACK: `Krrrrrrrr`; it must match the active transmission ID.
+* RTT request and reply: `P2hhhh`, `Q2hhhh`, with a four-hex probe counter.
+  The `2` distinguishes this version from the earlier probe format.
 
-Example for `T|AIR101 HOLD`: `D012302T|AIR101 HOL`, `D012312D`, then `K0123`.
-IDs increment modulo 65536, randomized at boot. They are not security nonces.
+For example, `T|AIR101 HOLD` can be sent as `DEjRWeJq802T|AIR101` and
+`DEjRWeJq812 HOLD`, followed by `KEjRWeJq8`. Ground TEXT uses the first 48
+bits of the PC command UUID. Heartbeats and aircraft events use a 32-bit
+random boot prefix and a 16-bit sequence counter. This keeps a previous boot's
+short sequence from routinely reusing an old ACK. Identifiers are probabilistic
+and provide neither authentication nor guaranteed global uniqueness.
 A sender queues at most eight routine messages. Aircraft MAYDAY has its own
 reserved slot and takes precedence over routine messages, including retries.
 A repeated A+B press while an emergency is active refers to the same outstanding
 message. Its pending, acknowledged, or failed status has a reserved LED display
 slot. Fragments are spaced by 12 ms in a dedicated fiber. The sender retries
-after 650 ms, with up to three attempts. Receiver holds at most four partial messages, each ≤96 characters,
-with a 3 s lifetime from first fragment. Out-of-order fragments are supported;
+after 650 ms, with up to three attempts. The receiver holds at most four
+partial messages, each up to 96 bytes, for 3 seconds from the first fragment.
+Whole one-fragment messages such as MAYDAY bypass the partial pool. Out-of-order fragments are supported;
 identical fragment duplicates are harmless; conflicting fragments/counts are
 ignored. Completed IDs are retained for up to 30 s (maximum 32); duplicates are
 ACKed without repeated events/scrolling. Reception callbacks do not scroll.
 LED display has its own bounded eight-item queue; new text is not acknowledged
 while that queue is full, allowing retry/explicit timeout rather than silent drop.
 
-Ground probes run every 2 s with a 1 s timeout and are separate from delivery retries. Ground measures elapsed
-`input.runningTime()` between sending P and receiving matching Q, includes
-firmware scheduling and packet processing, and reports one OK or LOST per probe.
-The desktop summarizes up to 120 outcomes, successful RTTs and RSSI samples.
+Ground probes run every 2 seconds with a 1-second deadline. Ground uses
+`input.runningTime()` to measure the elapsed time between sending P2 and
+receiving a matching Q2, including firmware scheduling and packet processing.
+Each probe has one terminal OK or LOST result. The loss percentage describes
+probes, and the RTT display shows the last successful measurement. RSSI -128
+is reserved as unavailable. The desktop retains up to 120 samples per metric.
 Neither RTT nor RSSI is converted to meters, altitude, or coordinates.
 After 7 seconds without valid radio traffic the link is LOST. The desktop tracks
 USB heartbeat freshness separately from the sonar stream, which goes stale

@@ -1,6 +1,6 @@
 {
     "name": "radar-mic-aircraft",
-    "description": "RADAR-MIC protocol 1 aircraft",
+    "description": "RADAR-MIC aircraft with radio protocol 2",
     "dependencies": {
         "core": "*",
         "radio": "*",

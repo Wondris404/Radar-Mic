@@ -6,13 +6,13 @@ import tempfile
 from pathlib import Path
 from datetime import datetime, timezone
 from time import monotonic
-from PySide6.QtCore import Qt, QTimer, QPointF
+from PySide6.QtCore import Qt, QSignalBlocker, QTimer, QPointF
 from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QComboBox, QLineEdit, QPlainTextEdit, QSpinBox,
     QGroupBox, QSplitter, QCheckBox, QScrollArea)
-from .protocol import VERSION, parse, valid_text
-from .state import State
+from .protocol import SONAR_MIN_CM, SONAR_MAX_CM, VERSION, parse, valid_text
+from .state import State, read_rssi
 from .transport import SerialTransport, Delivery, ports
 from .simulation import Simulation
 
@@ -103,6 +103,7 @@ class Window(QMainWindow):
         self.delivery = Delivery(self.send_record, self.log)
         self.retry_at = 0
         self.want_connection = False
+        self.reconnect_port = None
         self.last_sim = 0
         self.build()
         self.timer = QTimer(self)
@@ -146,7 +147,9 @@ class Window(QMainWindow):
         self.obstacle = QLabel("UNAVAILABLE")
         self.obstacle.setObjectName("metric")
         r.addWidget(self.obstacle)
-        r.addWidget(QLabel("Source: Sonar:bit / P2 • direct obstacle measurement • nominal 2–400 cm"))
+        r.addWidget(QLabel(
+            f"Source: Sonar:bit / P2 • obstacle measurement • nominal {SONAR_MIN_CM}–{SONAR_MAX_CM} cm"
+        ))
         grid.addWidget(radar_panel, 0, 0, 2, 1)
         info, il = panel("02 / AIRCRAFT • AIR101")
         self.info = QLabel()
@@ -215,11 +218,26 @@ class Window(QMainWindow):
         stamp = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
         self.history.appendPlainText(f"{stamp} {'[SIM] ' if self.sim else ''}{text}")
 
+    def selected_port(self):
+        choice = self.port_box.currentIndex()
+        text = self.port_box.currentText()
+        if choice >= 0 and text == self.port_box.itemText(choice):
+            return self.port_box.currentData()
+        return text.strip()
+
     def refresh_ports(self):
-        old = self.port_box.currentText()
+        old = self.selected_port()
         self.port_box.clear()
-        for device, label in ports(): self.port_box.addItem(label, device)
-        if self.port_box.count() == 0: self.port_box.setEditText(old or "COM3")
+        for device, label in ports():
+            self.port_box.addItem(label, device)
+        if old:
+            match = self.port_box.findData(old)
+            if match >= 0:
+                self.port_box.setCurrentIndex(match)
+            else:
+                self.port_box.setEditText(old)
+        elif self.port_box.count() == 0:
+            self.port_box.setEditText("COM3")
 
     def change_mode(self, index):
         self.disconnect_port()
@@ -237,14 +255,21 @@ class Window(QMainWindow):
 
     def connect_port(self):
         if self.sim: return
+        name = self.selected_port()
+        if not name:
+            self.log("Select the ground station COM port")
+            return
+        self.reconnect_port = name
         self.want_connection = True
+        self.open_requested_port()
+
+    def open_requested_port(self):
         try:
-            name = self.port_box.currentData() if self.port_box.currentIndex() >= 0 and self.port_box.currentText() == self.port_box.itemText(self.port_box.currentIndex()) else self.port_box.currentText()
             if self.serial.port:
                 self.close_link(cancel=True)
-            self.serial.open(name)
+            self.serial.open(self.reconnect_port)
             self.state.reset(preserve_emergency=True)
-            self.log(f"Serial open: {name} — waiting for protocol {VERSION} HELLO and heartbeat")
+            self.log(f"Serial open: {self.reconnect_port} — waiting for protocol {VERSION} HELLO and heartbeat")
         except (OSError, ValueError) as e:
             self.log(str(e)); self.retry_at = monotonic() + 3
 
@@ -301,14 +326,13 @@ class Window(QMainWindow):
                     lines = self.sim.poll(); self.last_sim = now
             else:
                 if self.want_connection and not self.serial.port and now >= self.retry_at:
-                    self.retry_at = now+3; self.connect_port()
+                    self.retry_at = now + 3
+                    self.open_requested_port()
                 lines = self.serial.poll()
             for line in lines:
                 try:
                     record = parse(line)
-                    self.state.apply(record, now)
-                    self.delivery.receive(record)
-                    if record.kind == "EVENT": self.log(f"RX AIR101 {record.fields[1]} • RSSI {record.fields[2]} dBm")
+                    self.apply_record(record, now)
                 except ValueError as e: self.log(f"Rejected serial record: {e}")
             self.delivery.tick(now)
         except (OSError, ValueError) as e:
@@ -317,6 +341,23 @@ class Window(QMainWindow):
             self.retry_at = now + 3
         self.state.tick(now)
         self.render_state()
+
+    def apply_record(self, record, now):
+        if record.kind not in {"HELLO", "ERROR"} and self.state.last_hello is None:
+            return
+        if (record.kind == "HEART" and self.state.ground_boot is not None
+                and record.fields[1] != self.state.ground_boot):
+            self.delivery.abandon("GROUND RESTARTED")
+            last_hello = self.state.last_hello
+            self.state.reset(preserve_emergency=True)
+            self.state.last_hello = last_hello
+            self.log("Ground station restarted — cleared pending commands")
+        self.state.apply(record, now)
+        self.delivery.receive(record)
+        if record.kind == "EVENT":
+            rssi = read_rssi(record.fields[2])
+            signal = "unavailable" if rssi is None else f"{rssi} dBm"
+            self.log(f"RX AIR101 {record.fields[1]} • RSSI {signal}")
 
     def render_state(self):
         s = self.state
@@ -328,12 +369,22 @@ class Window(QMainWindow):
         else:
             self.banner.setText(f"HARDWARE • waiting for protocol {VERSION} HELLO and heartbeat")
         self.alert.setText(s.emergency)
+        if s.sensor != "UNAVAILABLE":
+            with QSignalBlocker(self.scan):
+                self.scan.setChecked(s.sensor != "OFF")
+        self.scan.setEnabled(s.compatible and heartbeat and s.sensor != "UNAVAILABLE"
+                             and not any(p.record.kind == "SCAN" for p in self.delivery.pending.values()))
         self.obstacle.setText(s.obstacle + (" • OBSTACLE WARNING" if s.distance is not None and s.distance <= s.threshold else ""))
         rtt = f"{s.latest_rtt} ms / avg {sum(s.rtts)/len(s.rtts):.1f} / min {min(s.rtts)} / max {max(s.rtts)}" if s.rtts else "—"
         loss = f"{s.loss:.1f}% ({len(s.probes)} probes)" if s.loss is not None else "—"
         proximity = s.calibration.classify(s.rssi) if s.link else "UNKNOWN (no current signal)"
         if s.calibration.near <= s.calibration.far: proximity = "UNKNOWN (invalid calibration thresholds)"
-        self.info.setText(f"{'LINK ACTIVE' if s.link else 'AIRCRAFT SIGNAL LOST'}\nLast event: {s.last_message}\nRSSI: {s.rssi if s.link else '—'} dBm • {proximity}\nRTT latest: {rtt}\nPacket loss: {loss}\nLast seen: {s.last_seen}\nSource: radio • link metrics only; RTT is not distance")
+        signal = f"{s.rssi} dBm" if s.link and s.rssi is not None else "—"
+        self.info.setText(
+            f"{'LINK ACTIVE' if s.link else 'AIRCRAFT SIGNAL LOST'}\nLast event: {s.last_message}"
+            f"\nRSSI: {signal} • {proximity}\nLast successful RTT: {rtt}\nRTT probe loss: {loss}"
+            f"\nLast seen: {s.last_seen}\nSource: radio • link metrics only; RTT is not distance"
+        )
         self.status.setText(f"Sensor: {s.sensor} • confidence: {'direct, beam/range limited' if s.distance is not None else 'no valid measurement'} • Heartbeat: {'OK' if heartbeat else 'MISSING'} • radio group 47 / band 7")
         self.sonar_chart.values = s.distances
         self.rssi_chart.values = s.signals

@@ -24,6 +24,9 @@ TEXT_FIELDS = (BOOT, "10000", "HOLD")
     f"2|THRESH|{ID}|401",
     f"2|ACK|{ID}|DELIVERED",
     "2|SONAR|0000|VALID|0",
+    "2|SONAR|0000|VALID|3",
+    "2|SONAR|0000|VALID|401",
+    "2|SONAR|0000|OFF|42",
     "2|RTT|0000|OK|-1|-60",
     "2|EVENT|0000|BOGUS|MAYDAY|-60",
     "2|LINK|0000|AIR101|UP|-200",
@@ -137,7 +140,7 @@ def test_independent_sensor_failures_and_emergency():
     s.tick(9)
     assert s.distance == 30 and not s.link
     s.apply(parse("2|SONAR|0000|NO_TARGET|0"), 10)
-    assert s.obstacle == "NO ULTRASONIC TARGET" and s.distance is None
+    assert s.obstacle == "NO VALID ULTRASONIC DISTANCE" and s.distance is None
     assert "UNKNOWN" in s.calibration.classify(-60)
 
 
@@ -185,3 +188,28 @@ def test_real_serial_loopback():
     t.close()
     with pytest.raises(OSError):
         t.send(record)
+
+
+def test_local_control_is_not_replayed_without_a_boot_id():
+    sent, logs = [], []
+    d = Delivery(sent.append, logs.append)
+    for kind, value in (("SCAN", "0"), ("THRESH", "100"), ("PING", "AIR101")):
+        d.command(kind, value, now=0)
+    d.tick(4)
+    d.tick(8)
+    assert [item.kind for item in sent] == ["SCAN", "THRESH", "PING"]
+    d.tick(12)
+    assert not d.pending
+    assert all("TIMEOUT" in line for line in logs)
+
+
+def test_unavailable_rssi_is_not_interpreted_as_far():
+    state = State()
+    state.calibration.enabled = True
+    state.apply(parse("2|LINK|0000|AIR101|UP|-128"), 1)
+    assert state.link
+    assert state.rssi is None
+    assert state.signals[-1] is None
+    assert state.calibration.classify(state.rssi) == "UNKNOWN (RSSI unavailable)"
+    state.apply(parse("2|LINK|0000|AIR101|UP|-63"), 2)
+    assert state.rssi == -63

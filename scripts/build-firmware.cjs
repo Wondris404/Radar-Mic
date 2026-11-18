@@ -7,7 +7,7 @@ const {execFileSync}=require('node:child_process');
 const root=path.resolve(__dirname,'..');
 const target=path.join(root,'tools/node_modules/pxt-microbit');
 const cli=require.resolve('pxt-core/built/pxt.js',{paths:[target]});
-const invoke=(role,cmd)=>execFileSync(process.execPath,['-e',`require(${JSON.stringify(cli)}).mainCli(${JSON.stringify(target)},[${JSON.stringify(cmd)}])`],{cwd:path.join(root,'firmware',role),stdio:'inherit'});
+const invoke=(role,...args)=>execFileSync(process.execPath,['-e',`require(${JSON.stringify(cli)}).mainCli(${JSON.stringify(target)},${JSON.stringify(args)})`],{cwd:path.join(root,'firmware',role),stdio:'inherit'});
 const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'radar-sonar-'));
 try {
   execFileSync('git',['clone','https://github.com/elecfreaks/pxt-sonarbit.git',temporary],{stdio:'inherit'});
@@ -19,5 +19,6 @@ try {
   for(const role of ['ground','aircraft']) {
     invoke(role,'build');
     fs.copyFileSync(path.join(root,'firmware',role,'built/binary.hex'),path.join(root,'dist/firmware',`radar-mic-${role}.hex`));
+    if (process.argv.includes('--sim')) invoke(role,'build','--debug');
   }
 } finally { fs.rmSync(temporary,{recursive:true,force:true}); }

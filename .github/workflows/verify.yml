@@ -31,8 +31,15 @@ jobs:
         with:
           python-version: '3.11'
       - run: node tests/radio.test.cjs
-      - run: python -m unittest discover -s tests -p test_firmware_serial.py -v
-      - run: node scripts/build-firmware.cjs
+      - name: Install Qt runtime libraries for the offscreen bench
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon0
+      - run: python -m pip install -e '.[dev]'
+      - run: node scripts/build-firmware.cjs --sim
+      - run: python -m pytest -q
+        env:
+          QT_QPA_PLATFORM: offscreen
       - uses: actions/upload-artifact@v4
         with:
           name: RADAR-MIC-Firmware

@@ -1,82 +1,86 @@
 # Wiring and bench verification
 
-Ground station: micro:bit **V2**, USB data cable to Windows 11. Sonar:bit Signal
-→ **P2**, Voltage → **3V**, Ground → **GND**. Secure it to the LEGO mount facing
-forward; there is no servo, angular encoder, or 360-degree scan. Disconnect power
-before wiring; follow the sensor manufacturer's connector labels.
+Use two BBC micro:bit **V2** boards. Identify the ground board and the aircraft
+board before flashing. Use USB cables that carry both data and power.
 
-Aircraft: second micro:bit V2 fixed to the LEGO aircraft, USB power bank.
-No external radio module is needed. Both programs use group 47 / band 7.
-The power bank must stay on at the micro:bit's low load.
+The ELECFREAKS EF04089 Sonar:bit supports DC 3–5 V and the manufacturer's
+3.3 V microcontroller example uses P2. On the ground board connect Sonar:bit
+**S → P2, V → 3V, G → GND** through the expansion board. Disconnect all power
+first. Check the header labels and board orientation against the expansion
+board's documentation. Some breakout boards provide a separate 5 V rail or
+selectable logic levels. Use the 3 V rail and 3.3 V logic for this connection.
+The micro:bit pins cannot take a 5 V signal. Keep the sensor facing forward on
+the LEGO tower. [ELECFREAKS Sonar:bit](https://shop.elecfreaks.com/products/elecfreaks-octopus-sonar-bit) ·
+[micro:bit pinout](https://tech.microbit.org/hardware/edge-connector/)
 
-## Flash
+Power the aircraft from a computer USB port for the first bench test. For
+standalone use the micro:bit's battery connector with the Foundation's
+recommended 2 × AAA holder. The Foundation advises against generic USB power
+banks, which can shut off or produce out-of-range voltage at low load. The
+user's exact power bank and expansion board have not been verified.
+[Foundation power guidance](https://tech.microbit.org/hardware/power-supply/#usb-powering) ·
+[Battery holder instructions](https://support.microbit.org/support/solutions/articles/19000013982-how-do-i-power-my-micro-bit-)
 
-Download **RADAR-MIC-Firmware** and **RADAR-MIC-Windows** from the same successful
-[Actions run](https://github.com/Wondris404/Radar-Mic/actions/workflows/verify.yml).
-Sign in to GitHub to download artifacts. Choose a run that includes USB protocol 2.
-The v2 desktop app requires the v2 ground firmware.
+## Flash both boards and start Windows
 
-1. Extract the firmware artifact. Connect the ground micro:bit V2 with a USB data
-   cable. Copy `radar-mic-ground.hex` to its `MICROBIT` drive and wait for the
-   board to finish flashing.
-2. Connect the aircraft micro:bit V2 separately. Copy
-   `radar-mic-aircraft.hex` to its `MICROBIT` drive. Wait for flashing to finish
-   before moving the aircraft board to its USB power bank.
-3. Open the Windows artifact, extract `RADAR-MIC-Windows.zip`, and keep
-   `RADAR-MIC.exe` with its accompanying files. Launch the EXE from there.
+1. Sign in to GitHub. Download **RADAR-MIC-Firmware** and **RADAR-MIC-Windows**
+   from the [same successful Actions run](https://github.com/Wondris404/Radar-Mic/actions/workflows/verify.yml)
+   containing the hardware audit. Flash both boards because the audit changes
+   the radio format.
+2. Extract the firmware bundle. Connect the ground micro:bit with a USB data
+   cable. Copy `radar-mic-ground.hex` to its `MICROBIT` drive and wait for
+   flashing to finish. Connect the aircraft board separately and do the same
+   with `radar-mic-aircraft.hex`.
+3. Extract the Windows artifact, then unpack `RADAR-MIC-Windows.zip`.
+   Run `RADAR-MIC.exe` while keeping its accompanying files in the same folder.
 
-For source builds, use the CLI commands in the README. You can also open each HEX
-in [MakeCode](https://makecode.microbit.org/) or create separate JavaScript
-projects using each role's `main.ts`, `radio.ts` and `pxt.json`.
-The ground manifest pins the official ELECFREAKS Sonar:bit extension.
+The CLI commands in the README build the same Universal HEX format. The
+ground manifest pins the official Sonar:bit extension.
 
 ## First bench test
 
-1. With the ground board disconnected, wire the sensor **Signal → P2, Voltage →
-   3V, Ground → GND**. Connect ground to the PC over a USB data cable, power the
-   aircraft, and close any MakeCode serial console or other COM-port software.
-2. In RADAR-MIC, choose **HARDWARE**, click **Discover ports**, select the ground
-   board's COM port, then click **Connect**. You can check the COM number in
-   Windows Device Manager under **Ports (COM & LPT)**. Wait for **protocol 2 /
-   GROUND01 compatible**, **Heartbeat: OK**, and **LINK ACTIVE**.
-3. Type `AIR101 HOLD` and click **SEND**. Expect a TX log entry followed by
-   **ACK RECEIVED** and verify that the aircraft scrolls the text.
-4. Press aircraft **A** for POSITION, **B** for LANDING, then **A+B** for MAYDAY.
-   Check that the PC displays the red timestamped MAYDAY banner. Unplug and
-   reconnect ground USB. Confirm the alert stays visible, then click
-   **Acknowledge MAYDAY** to clear it.
-5. Place a flat obstacle 20–100 cm in front of the sensor. Compare the reading
-   with a ruler, then move the obstacle away and check **NO ULTRASONIC TARGET**.
-   Ground **A** toggles scanning and **B** scrolls link/sensor status.
-6. Switch off aircraft power and send a test message. Check for
-   **AIRCRAFT SIGNAL LOST** within 7 seconds and a radio timeout or expiry with
-   unconfirmed reception. To cancel pending text, click **Cancel pending text**
-   and check the log for the ground result.
+1. Wire the unpowered ground board as above. Connect it to the Windows laptop
+   and power the aircraft from another computer USB port or the recommended
+   battery holder. Close other serial-monitor programs.
+2. Open Windows **Device Manager → Ports (COM & LPT)**. Note the ground board's
+   COM number by watching the list when plugging in that board. In RADAR-MIC
+   select **HARDWARE**, click **Discover ports**, select that COM port and click
+   **Connect**. Look for **protocol 2 / GROUND01 compatible**, **Heartbeat: OK**
+   and **LINK ACTIVE**. If Windows changes the COM number, select it again and
+   click **Connect**. [Official Windows USB guidance](https://support.microbit.org/support/solutions/articles/19000089574-micro-bit-does-not-connect-in-windows)
+3. Send `AIR101 HOLD`. Verify **ACK RECEIVED** and watch the aircraft LEDs
+   scroll the whole text. Confirmation means the aircraft accepted the text
+   for display. A person reading the text is outside the ACK.
+4. Press and release aircraft **A** (POSITION) and then **B** (LANDING).
+   Press **A+B** together and release to test MAYDAY. Verify that the timestamped
+   red banner stays visible after unplugging ground USB and reconnecting it.
+   Click **Acknowledge MAYDAY** to clear the banner.
+5. Place a flat rigid obstacle perpendicular to the beam at 20, 50 and 100 cm.
+   Measure from the sensor face. Compare the displayed values with a ruler
+   and record deviations. Move the obstacle away and check **NO VALID
+   ULTRASONIC DISTANCE**. Ground **A** toggles scanning. The desktop checkbox
+   follows the reported state. Ground **B** scrolls radio and sensor status.
+6. Remove aircraft power. Check **AIRCRAFT SIGNAL LOST** after the link timeout.
+   Send a text test and verify **RADIO_TIMEOUT** or **EXPIRED** and no **ACK
+   RECEIVED** for that command. Wait for the result before powering the aircraft
+   again. When the link returns, send a different text and verify that only the
+   new text is received. For a separate cancellation test, click **Cancel
+   pending text** before timeout and check for **ACK CANCELLED**.
+7. Leave the setup running and record whether the USB port, P2 measurement
+   and radio stay stable. Range, interference, the actual LED scroll, and
+   power-source behavior require the physical boards.
 
-Reconnection uses the selected port. Re-select it if Windows assigns a different
-COM number. A disconnection resets telemetry and outstanding PC delivery state,
-while the MAYDAY banner stays latched within the running app.
+## Interpreting measurements
 
-## Limits and calibration
+Sonar:bit reports a nominal 4–400 cm obstacle distance. Temperature, angles and
+absorbing surfaces change the echo. No echo, a disconnected sensor and an echo
+outside the accepted range can all produce no valid distance. A silent telemetry
+stream is shown as UNAVAILABLE. The fixed sector is illustrative. The module
+does not measure angle, identify the aircraft, or map coordinates.
 
-Sonar is nominally 2–400 cm and depends strongly on object material, angle, beam
-coverage and ambient conditions. The extension returns zero on pulse timeout:
-**no echo cannot distinguish an unplugged/dead sensor from no target**. Thus zero
-is NO ULTRASONIC TARGET, not a diagnosed fault. Missing telemetry is UNAVAILABLE;
-a future diagnostic provider can emit FAULT. No radio-derived substitute exists.
-
-Ultrasonic detections may be a wall or a LEGO object, not AIR101. Its forward
-marker has measured range but no measured angle. The displayed narrow sector is
-illustrative, not a calibrated beam pattern. Aircraft radio status has no plot
-position. No altitude or coordinates are generated.
-
-RSSI classification defaults to UNKNOWN. To experiment, collect RSSI observations
-at locally chosen near/middle/far placements, with the same mounting/orientation,
-and set NEAR and FAR thresholds in the UI (NEAR must exceed FAR). Enable calibration
-only after this; it is low confidence, changes with interference, body shielding,
-reflections, battery, and orientation, and is not a physical range measurement.
-RTT is application latency only. It cannot measure radio propagation distance.
-
-No hardware was attached in development. USB enumeration on Windows, actual
-sensor readings, radio range/packet-loss characteristics, button/LED operation,
-and power-bank behavior require the above physical acceptance test.
+RSSI is received signal power in dBm when available. Orientation, the mounting,
+obstructions and multipath make thresholds installation specific. The desktop
+defaults to UNKNOWN and offers optional empirical proximity labels. The RTT
+probe measures software turnaround and radio time together. Its losses are
+shown separately from text delivery acknowledgments. The application does not
+convert RF latency or RSSI to meters, coordinates or altitude.

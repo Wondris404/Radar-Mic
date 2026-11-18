@@ -3,7 +3,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Protocol
-from .protocol import CLOCK_MASK, TEXT_LEASE_MS, Record
+from .protocol import CLOCK_MASK, RSSI_UNKNOWN, TEXT_LEASE_MS, Record
 
 
 class RangingProvider(Protocol):
@@ -18,7 +18,9 @@ class Calibration:
     enabled: bool = False
 
     def classify(self, rssi):
-        if not self.enabled or rssi is None:
+        if rssi is None:
+            return "UNKNOWN (RSSI unavailable)"
+        if not self.enabled:
             return "UNKNOWN (uncalibrated)"
         return ("NEAR" if rssi >= self.near else "FAR" if rssi < self.far else "MEDIUM") + " (low confidence)"
 
@@ -66,7 +68,7 @@ class State:
             self.distances.append(self.distance)
         if k in {"LINK", "EVENT"}:
             self.link = k == "EVENT" or f[1] == "UP"
-            self.rssi = int(f[2])
+            self.rssi = read_rssi(f[2]) if self.link else None
             if self.link:
                 self.last_radio = now
                 self.last_seen = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
@@ -80,7 +82,7 @@ class State:
             if ok:
                 self.latest_rtt = int(f[1])
                 self.rtts.append(self.latest_rtt)
-                self.rssi = int(f[2])
+                self.rssi = read_rssi(f[2])
 
     def tick(self, now):
         if self.last_sonar is None or now - self.last_sonar > 2:
@@ -104,4 +106,11 @@ class State:
     @property
     def obstacle(self):
         if self.sensor == "VALID": return f"{self.distance} cm"
-        return {"NO_TARGET": "NO ULTRASONIC TARGET", "OFF": "SCANNING OFF"}.get(self.sensor, "UNAVAILABLE")
+        return {
+            "NO_TARGET": "NO VALID ULTRASONIC DISTANCE", "OFF": "SCANNING OFF",
+        }.get(self.sensor, "UNAVAILABLE")
+
+
+def read_rssi(value: str) -> int | None:
+    rssi = int(value)
+    return rssi if rssi != RSSI_UNKNOWN else None

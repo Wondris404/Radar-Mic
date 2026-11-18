@@ -6,6 +6,9 @@ VERSION = "2"
 MAX_LINE = 240
 CLOCK_MASK = 0x3FFFFFFF
 TEXT_LEASE_MS = 10000
+SONAR_MIN_CM = 4
+SONAR_MAX_CM = 400
+RSSI_UNKNOWN = -128
 COMMAND_TYPES = {"TEXT", "CANCEL", "SCAN", "THRESH", "PING"}
 FIELD_COUNTS = {
     "HELLO": 2, "TEXT": 3, "CANCEL": 1, "SCAN": 1, "THRESH": 1, "PING": 1,
@@ -72,17 +75,19 @@ def parse(line: str) -> Record:
     if kind == "PING" and fields[0] != "AIR101": raise ValueError("Unknown aircraft")
     if kind == "SONAR":
         if fields[0] not in {"VALID", "NO_TARGET", "OFF", "FAULT"}: raise ValueError("Invalid sensor state")
-        integer(fields[1], 0, 400)
-        if fields[0] == "VALID" and int(fields[1]) < 2: raise ValueError("Invalid distance")
+        if fields[0] == "VALID":
+            integer(fields[1], SONAR_MIN_CM, SONAR_MAX_CM)
+        elif fields[1] != "0":
+            raise ValueError("Invalid distance for sonar state")
     if kind in {"EVENT", "LINK"}:
         if fields[0] != "AIR101": raise ValueError("Unknown aircraft")
-        integer(fields[2], -128, 0)
+        integer(fields[2], RSSI_UNKNOWN, 0)
         if kind == "EVENT" and fields[1] not in {"POSITION", "LANDING", "MAYDAY"}: raise ValueError("Invalid event")
         if kind == "LINK" and fields[1] not in {"UP", "LOST"}: raise ValueError("Invalid link")
     if kind == "RTT":
         if fields[0] not in {"OK", "LOST"}: raise ValueError("Invalid probe state")
         integer(fields[1], 0, 60000)
-        integer(fields[2], -128, 0)
+        integer(fields[2], RSSI_UNKNOWN, 0)
     if kind == "HEART":
         if fields[0] != "GROUND01": raise ValueError("Unknown ground")
         integer(fields[2], 0, CLOCK_MASK)
