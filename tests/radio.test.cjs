@@ -1,38 +1,12 @@
-// Execute the shipped TypeScript, not a separately implemented protocol model.
+// Execute the shipped TypeScript, including its actual USB framing.
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const vm = require('node:vm');
-const ts = require('../tools/node_modules/typescript');
-const shared = fs.readFileSync('firmware/shared.ts', 'utf8');
-for (const role of ['ground', 'aircraft']) assert.equal(fs.readFileSync(`firmware/${role}/radio.ts`, 'utf8'), shared);
-function device(role, actual=false) {
-  let handler;
-  const d = {now:0, sent:[], received:[], results:[], forever:[], rssi:-61, serial:[], buttons:{}};
-  const context = vm.createContext({
-    radio: {setGroup(){}, setFrequencyBand(){}, setTransmitPower(){},
-      onReceivedString(fn){handler=fn}, receivedPacket(){return d.rssi},
-      sendString(p){assert.ok(p.length<=19); d.sent.push(p); if(d.wire) d.wire(p)}},
-    serial:{redirectToUSB(){},setBaudRate(){},setRxBufferSize(){},setTxBufferSize(){},readString(){return ''},writeLine:s=>d.serial.push(s)},
-    BaudRate:{BaudRate115200:115200}, Button:{A:0,B:1,AB:2},
-    sonarbit:{sonarbit_distance:()=>42},Distance_Unit:{Distance_Unit_cm:1},DigitalPin:{P2:2},led:{plot(){},unplot(){}},
-    randint:()=> role==='a'?100:1000,
-    input: {runningTime:()=>d.now, onButtonPressed:(b,fn)=>d.buttons[b]=fn}, RadioPacketProperty:{SignalStrength:0},
-    basic: {forever:fn=>d.forever.push(fn), pause(){}, showString(){}},
-    acceptBody:body=>body.length>0, received:(...args)=>d.received.push(args),
-    delivered:(...args)=>d.results.push(args), onProbe(){}, onProbeReply(){},
-  });
-  vm.runInContext('Array.prototype.removeAt = function(i) { return this.splice(i,1)[0]; }',context);
-  vm.runInContext(ts.transpile(shared + (actual ? fs.readFileSync(`firmware/${role}/main.ts`, 'utf8') : '')), context);
-  d.receive = p=>handler(p);
-  d.run = code=>vm.runInContext(code,context);
-  d.tick = ms=>{d.now+=ms; d.forever[0]()};
-  return d;
-}
+const {device} = require('./firmware-host.cjs');
+
 let a=device('a'), b=device('b');
 a.wire=p=>b.receive(p); b.wire=p=>a.receive(p);
 a.run(`enqueue('T|' + 'x'.repeat(80), 'pc01')`); a.tick(0);
 assert.equal(b.received.length,1); assert.equal(b.received[0][0], 'T|'+'x'.repeat(80));
-assert.deepEqual(a.results,[['pc01',true]]);
+assert.deepEqual(a.results,[['pc01','RECEIVED']]);
 assert.equal(a.sent.filter(p=>p[0]==='D').length,7);
 // Reverse order, duplicate fragments, reassembly, duplicate completed message.
 a=device('a'); b=device('b');
@@ -45,12 +19,12 @@ assert.equal(b.received.length,1);
 a=device('a'); b=device('b'); a.wire=p=>b.receive(p);
 a.run(`enqueue('E|LANDING', 'event')`); a.tick(0);
 b.wire=p=>a.receive(p); a.tick(650);
-assert.equal(b.received.length,1); assert.deepEqual(a.results,[['event',true]]);
+assert.equal(b.received.length,1); assert.deepEqual(a.results,[['event','RECEIVED']]);
 // Lost fragment => retry completes the existing assembly.
 a=device('a'); b=device('b'); let drop=true;
 a.wire=p=>{if(drop && p[5]==='1')return; b.receive(p)}; b.wire=p=>a.receive(p);
 a.run(`enqueue('T|'+'z'.repeat(80), 'fragment')`); a.tick(0); assert.equal(b.received.length,0);
-drop=false; a.tick(650); assert.equal(b.received.length,1); assert.deepEqual(a.results,[['fragment',true]]);
+drop=false; a.tick(650); assert.equal(b.received.length,1); assert.deepEqual(a.results,[['fragment','RECEIVED']]);
 // Incomplete assemblies expire; malformed fragments and bounded slots cannot allocate unbounded memory.
 b=device('b'); b.receive('D000108'+ 'a'.repeat(12));
 assert.equal(b.run('rxIds.length'),1); b.tick(3001); assert.equal(b.run('rxIds.length'),0);
@@ -61,29 +35,139 @@ assert.equal(b.received.length,0);
 // Three attempts then explicit failure; queue remains bounded.
 a=device('a');
 a.run(`enqueue('E|MAYDAY','emergency')`); for(const ms of [0,650,650,650])a.tick(ms);
-assert.deepEqual(a.results,[['emergency',false]]);
+assert.deepEqual(a.results,[['emergency','RADIO_TIMEOUT']]);
 for(let n=0;n<20;n++)a.run(`enqueue('H|AIR101','HEART')`);
-assert.equal(a.run('txIds.length'),8);
+assert.equal(a.run('outgoing.length'),8);
 console.log('Radio transport: 8 scenarios passed (actual shared MakeCode TypeScript)');
 
-// Interoperate both shipped firmwares: PC command -> fragmented radio -> ACK.
-const ground=device('ground',true), aircraft=device('aircraft',true);
-ground.wire=p=>aircraft.receive(p); aircraft.wire=p=>ground.receive(p);
-ground.run(`command('1|TEXT|abcd|AIR101 HOLD')`); ground.tick(0);
-assert.ok(ground.serial.includes('1|ACK|abcd|DELIVERED'));
-assert.ok(aircraft.run('displayQueue.indexOf("AIR101 HOLD") >= 0'));
-const n=ground.sent.length;
-ground.run(`command('1|TEXT|abcd|AIR101 HOLD')`); ground.tick(20);
-assert.equal(ground.sent.length,n); // serial retry replays cached ACK
-ground.run(`command('1|TEXT|abcd|DIFFERENT')`);
-assert.ok(ground.serial.includes('1|ERROR|abcd|ID_CONFLICT'));
-aircraft.buttons[2](); aircraft.tick(0);
-assert.ok(ground.serial.some(s=>s.includes('|AIR101|MAYDAY|-61')));
+// PC sends a real USB record through the ground reader, then the aircraft ACKs.
+const id = n => n.toString(16).padStart(32, '0');
+const boot = ground => ground.run('bootId');
+const text = (ground, n, message, deadline = 10000) =>
+  `2|TEXT|${id(n)}|${boot(ground)}|${deadline}|${message}`;
+const cancel = (ground, n) => `2|CANCEL|${id(n)}|${boot(ground)}`;
+const reply = (n, result, kind = 'ACK') => `2|${kind}|${id(n)}|${result}`;
+const connect = (ground, aircraft) => {
+  ground.wire = packet => aircraft.receive(packet);
+  aircraft.wire = packet => ground.receive(packet);
+};
+
+const ground = device('ground', true), aircraft = device('aircraft', true);
+connect(ground, aircraft);
+const record = text(ground, 1, 'AIR101 HOLD ');
+ground.usb(record.slice(0, 25));
+ground.tick(0);
+assert.equal(ground.sent.length, 0);
+ground.usb(record.slice(25) + '\r\n');
+ground.tick(0);
+assert.ok(ground.records.includes(reply(1, 'RECEIVED')));
+assert.ok(aircraft.run('displayQueue.indexOf("AIR101 HOLD ") >= 0'));
+const n = ground.sent.length;
+ground.command(record);
+ground.tick(20);
+assert.equal(ground.sent.length, n);
+ground.command(text(ground, 1, 'DIFFERENT'));
+assert.ok(ground.records.includes(reply(1, 'ID_CONFLICT', 'ERROR')));
+ground.command(cancel(ground, 1)); // Once accepted, cancellation must report reception.
+assert.equal(ground.records.at(-1), reply(1, 'RECEIVED'));
+aircraft.buttons[2]();
+aircraft.tick(0);
+assert.ok(ground.records.some(s => s.includes('|AIR101|MAYDAY|-61')));
 ground.run('startProbe()');
-assert.ok(ground.serial.some(s=>s.includes('|OK|0|-61')));
-ground.wire=()=>{}; ground.run('startProbe()'); ground.now+=1001;
-ground.forever[ground.forever.length-1]();
-assert.ok(ground.serial.some(s=>s.includes('|LOST|0|')));
-assert.equal(ground.run('acceptBody("T|bad")'),false);
-assert.equal(aircraft.run('acceptBody("E|MAYDAY")'),false);
-console.log('Firmware integration: PC delivery, duplicate/conflicting commands, emergency, RTT success/loss, role validation passed');
+assert.ok(ground.records.some(s => s.includes('|OK|0|-61')));
+ground.wire = () => {};
+ground.run('startProbe()');
+ground.now += 1001;
+ground.forever[ground.forever.length - 1]();
+assert.ok(ground.records.some(s => s.includes('|LOST|0|')));
+assert.equal(ground.run('acceptBody("T|bad")'), false);
+assert.equal(aircraft.run('acceptBody("E|MAYDAY")'), false);
+
+// A full routine queue and an unacknowledged routine transmission cannot block MAYDAY.
+const busy = device('aircraft', true);
+busy.buttons[1]();
+busy.tick(0);
+for (let i = 0; i < 8; i++) busy.buttons[0]();
+assert.equal(busy.run('outgoing.length'), 8);
+busy.run('while (displayQueue.length < 8) displayText("QUEUED")');
+busy.buttons[2]();
+const maydayId = busy.run('emergency.id');
+busy.buttons[2]();
+assert.equal(busy.run('emergency.id'), maydayId);
+busy.tick(20);
+assert.equal(busy.sent.at(-1).slice(7), 'E|MAYDAY');
+busy.receive('K' + maydayId);
+assert.equal(busy.run('displayPriority'), 'ACK MAYDAY');
+assert.equal(busy.run('outgoing.length'), 8);
+busy.buttons[2]();
+for (const ms of [0, 650, 650, 650]) busy.tick(ms);
+assert.equal(busy.run('displayPriority'), 'FAIL MAYDAY');
+
+// On reconnection after the application deadline, queued text has already expired.
+const offline = device('ground', true), returning = device('aircraft', true);
+for (let i = 1; i <= 8; i++) offline.command(text(offline, i, i === 8 ? 'LAND' : 'HOLD'));
+offline.tick(0);
+const retry = text(offline, 8, 'LAND');
+offline.now = 8000;
+offline.command(retry);
+connect(offline, returning);
+const first = offline.sent.length;
+offline.tick(6000);
+assert.equal(offline.sent.length, first);
+assert.equal(returning.run('displayQueue.length'), 1); // Startup label only.
+assert.ok(offline.records.includes(reply(8, 'EXPIRED', 'ERROR')));
+offline.command(retry);
+offline.tick(20);
+assert.equal(offline.sent.length, first);
+
+// Cancellation removes queued work, remains sticky across retries and stops an
+// active fragmented transmission at the next yield.
+const cancelled = device('ground', true);
+cancelled.command(text(cancelled, 1, 'x'.repeat(80)));
+cancelled.command(text(cancelled, 2, 'HOLD'));
+cancelled.command(cancel(cancelled, 2));
+cancelled.command(text(cancelled, 2, 'HOLD'));
+assert.equal(cancelled.records.at(-1), reply(2, 'CANCELLED'));
+cancelled.command(cancel(cancelled, 3));
+cancelled.command(text(cancelled, 3, 'RETURN'));
+assert.equal(cancelled.records.at(-1), reply(3, 'CANCELLED'));
+cancelled.onPause = ms => {
+  if (ms !== 12) return;
+  cancelled.onPause = undefined;
+  cancelled.command(cancel(cancelled, 1));
+};
+cancelled.tick(0);
+assert.equal(cancelled.sent.length, 1);
+assert.equal(cancelled.records.at(-1), reply(1, 'CANCELLED'));
+cancelled.tick(8000);
+assert.equal(cancelled.sent.length, 1);
+
+// A serial reply can yield while USB cancellation updates the same queue.
+const concurrent = device('ground', true);
+for (let i = 1; i <= 4; i++) concurrent.command(text(concurrent, i, 'HOLD'));
+concurrent.onSerialWrite = () => {
+  concurrent.onSerialWrite = undefined;
+  concurrent.command(cancel(concurrent, 1));
+  concurrent.command(cancel(concurrent, 2));
+};
+concurrent.tick(10001);
+assert.equal(concurrent.sent.length, 0);
+assert.ok(concurrent.records.includes(reply(1, 'CANCELLED')));
+assert.ok(concurrent.records.includes(reply(2, 'CANCELLED')));
+assert.ok(!concurrent.records.includes(reply(1, 'EXPIRED', 'ERROR')));
+assert.ok(!concurrent.records.includes(reply(2, 'EXPIRED', 'ERROR')));
+
+// Absolute lease expires between fragments and is tied to a single board boot.
+const expiring = device('ground', true);
+expiring.now = 0x3ffffffe;
+expiring.command(text(expiring, 1, 'x'.repeat(80), 3));
+expiring.onPause = ms => { expiring.now += ms; };
+expiring.tick(0);
+assert.equal(expiring.sent.length, 1);
+expiring.tick(0);
+assert.equal(expiring.records.at(-1), reply(1, 'EXPIRED', 'ERROR'));
+const rebooted = device('ground', true, 2000);
+rebooted.command(text(expiring, 1, 'HOLD'));
+assert.equal(rebooted.records.at(-1), reply(1, 'STALE_BOOT', 'ERROR'));
+
+console.log('Firmware integration passed: USB commands, reception, retries, boot IDs, cancellation, expiry, MAYDAY priority, and RTT');

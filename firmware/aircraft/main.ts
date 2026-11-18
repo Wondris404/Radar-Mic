@@ -4,8 +4,10 @@ function acceptBody(body: string): boolean {
 function received(body: string, id: string, rssi: number): void {
     if (body.substr(0, 2) == "T|") displayText(body.substr(2))
 }
-function delivered(tag: string, ok: boolean): void {
-    if (tag != "HEART") displayText(ok ? "ACK " + tag : "FAIL " + tag)
+function delivered(tag: string, result: string): void {
+    const prefix = result == "RECEIVED" ? "ACK " : "FAIL "
+    if (tag == "MAYDAY") displayPriority = prefix + tag
+    else if (tag != "HEART") displayText(prefix + tag)
 }
 function onProbe(id: string, rssi: number): void {
     lastSeen = input.runningTime(); lastRssi = rssi
@@ -14,7 +16,7 @@ function onProbe(id: string, rssi: number): void {
 function onProbeReply(id: string, rssi: number): void {}
 input.onButtonPressed(Button.A, function () { if (!enqueue("E|POSITION", "POSITION")) displayText("BUSY") })
 input.onButtonPressed(Button.B, function () { if (!enqueue("E|LANDING", "LANDING")) displayText("BUSY") })
-input.onButtonPressed(Button.AB, function () { if (!enqueue("E|MAYDAY", "MAYDAY")) displayText("BUSY") })
+input.onButtonPressed(Button.AB, enqueueEmergency)
 basic.forever(function () {
     enqueue("H|AIR101", "HEART")
     basic.pause(2000)
