@@ -20,7 +20,8 @@ The [hardware audit in Slovak](docs/HARDWARE-AUDIT.sk.md) gives the verification
 scope and limitations.
 
 Install **Python 3.11 or newer** from python.org (including the `py` launcher), and
-Git for Windows. Open PowerShell:
+Git for Windows. The installer uses PySide6 6.11.3 because 6.12.0 can abort an
+application after repeated Qt updates on Python 3.11. Open PowerShell:
 
 ```powershell
 git clone https://github.com/Wondris404/Radar-Mic.git

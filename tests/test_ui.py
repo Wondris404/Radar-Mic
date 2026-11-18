@@ -140,3 +140,29 @@ def test_automatic_reconnect_keeps_port_selected_at_connect(monkeypatch):
         assert opened == ["COM9", "COM9"]
     finally:
         w.close()
+
+
+def test_repeated_qt_updates_exit_cleanly():
+    import subprocess
+    import sys
+
+    # Exercise enough Qt setters to detect C-extension reference loss on 3.11,
+    # without taking down the rest of the test process if the issue recurs.
+    script = """
+from PySide6.QtWidgets import QApplication
+from radar_mic.app import Window
+
+app = QApplication([])
+window = Window()
+window.timer.stop()
+for i in range(1800):
+    window.state.sensor = "OFF" if i % 2 else "VALID"
+    window.state.distance = None if i % 2 else 42
+    window.render_state()
+window.close()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=30,
+        env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+    )
+    assert result.returncode == 0, result.stderr
