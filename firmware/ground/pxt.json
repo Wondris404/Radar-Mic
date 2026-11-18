@@ -1,0 +1,15 @@
+{
+    "name": "radar-mic-ground",
+    "description": "RADAR-MIC protocol 1 ground",
+    "dependencies": {
+        "core": "*",
+        "radio": "*",
+        "microphone": "*",
+        "sonarbit": "github:elecfreaks/pxt-sonarbit#3745c29c385dc85a13600d48391ff32e85f0748d"
+    },
+    "files": [
+        "main.ts",
+        "radio.ts"
+    ],
+    "preferredEditor": "tsprj"
+}

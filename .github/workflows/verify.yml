@@ -1,0 +1,35 @@
+name: Test and build Windows desktop
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  desktop:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m venv .venv
+      - run: .\.venv\Scripts\python.exe -m pip install -e '.[dev]'
+      - run: .\scripts\build-windows.ps1
+        env:
+          QT_QPA_PLATFORM: offscreen
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RADAR-MIC-Windows
+          path: dist/RADAR-MIC-Windows.zip
+  radio:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --prefix tools --ignore-scripts
+      - run: node tests/radio.test.cjs
+      - run: node scripts/build-firmware.cjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RADAR-MIC-Firmware
+          path: dist/firmware/*.hex

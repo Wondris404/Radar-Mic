@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "description": "Firmware compilation and deterministic transport tests",
+  "devDependencies": {"typescript": "5.9.3", "pxt-microbit": "9.1.2"}
+}

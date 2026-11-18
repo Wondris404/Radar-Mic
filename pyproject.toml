@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "radar-mic"
+version = "1.0.0"
+description = "Fixed-direction ultrasonic and independent micro:bit aircraft communication console"
+requires-python = ">=3.11"
+dependencies = ["PySide6>=6.7,<7", "pyserial>=3.5,<4"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "pyinstaller>=6,<7"]
+
+[project.scripts]
+radar-mic = "radar_mic.app:main"
+
+[tool.setuptools.packages.find]
+include = ["radar_mic*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

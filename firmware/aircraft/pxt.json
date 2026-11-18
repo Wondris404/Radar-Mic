@@ -1,0 +1,14 @@
+{
+    "name": "radar-mic-aircraft",
+    "description": "RADAR-MIC protocol 1 aircraft",
+    "dependencies": {
+        "core": "*",
+        "radio": "*",
+        "microphone": "*"
+    },
+    "files": [
+        "main.ts",
+        "radio.ts"
+    ],
+    "preferredEditor": "tsprj"
+}
