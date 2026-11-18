@@ -142,6 +142,21 @@ assert.equal(cancelled.records.at(-1), reply(1, 'CANCELLED'));
 cancelled.tick(8000);
 assert.equal(cancelled.sent.length, 1);
 
+// A serial reply can yield while USB cancellation updates the same queue.
+const concurrent = device('ground', true);
+for (let i = 1; i <= 4; i++) concurrent.command(text(concurrent, i, 'HOLD'));
+concurrent.onSerialWrite = () => {
+  concurrent.onSerialWrite = undefined;
+  concurrent.command(cancel(concurrent, 1));
+  concurrent.command(cancel(concurrent, 2));
+};
+concurrent.tick(10001);
+assert.equal(concurrent.sent.length, 0);
+assert.ok(concurrent.records.includes(reply(1, 'CANCELLED')));
+assert.ok(concurrent.records.includes(reply(2, 'CANCELLED')));
+assert.ok(!concurrent.records.includes(reply(1, 'EXPIRED', 'ERROR')));
+assert.ok(!concurrent.records.includes(reply(2, 'EXPIRED', 'ERROR')));
+
 // Absolute lease expires between fragments and is tied to a single board boot.
 const expiring = device('ground', true);
 expiring.now = 0x3ffffffe;

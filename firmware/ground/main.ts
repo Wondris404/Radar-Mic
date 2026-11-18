@@ -29,7 +29,7 @@ function reply(id: string, result: string): void {
 function delivered(tag: string, result: string): void {
     if (tag == "HEART") return
     const i = commandIds.indexOf(tag)
-    if (i >= 0) {
+    if (i >= 0 && !commandResults[i]) {
         commandResults[i] = result
         reply(tag, result)
     }

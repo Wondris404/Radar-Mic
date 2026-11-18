@@ -44,7 +44,10 @@ function device(role, actual = false, seed = role === 'a' ? 100 : 1000) {
         d.serialInput = '';
         return data;
       },
-      writeString(text) { d.serialWrites.push(text); },
+      writeString(text) {
+        d.serialWrites.push(text);
+        if (d.onSerialWrite) d.onSerialWrite(text);
+      },
     },
     Delimiters: {NewLine: 0},
     BaudRate: {BaudRate115200: 115200},

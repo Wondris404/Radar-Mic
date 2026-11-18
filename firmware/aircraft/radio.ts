@@ -134,12 +134,19 @@ radio.onReceivedString(function (packet: string) {
 })
 basic.forever(function () {
     prune()
+    let expired: string[] = null
     for (let i = outgoing.length - 1; i >= 0; i--) {
         const queued = outgoing[i]
         if (queued.expired()) {
             outgoing.removeAt(i)
-            delivered(queued.tag, "EXPIRED")
+            if (!expired) expired = []
+            expired.push(queued.tag)
         }
+    }
+    // Serial writes can yield to the cancellation reader. Finish changing the
+    // queue before reporting outcomes.
+    if (expired) {
+        for (let i = 0; i < expired.length; i++) delivered(expired[i], "EXPIRED")
     }
     if (active && active.expired()) complete(active, "EXPIRED")
     if (!active && outgoing.length && !emergency) active = outgoing.shift()
