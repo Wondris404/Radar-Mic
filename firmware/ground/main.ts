@@ -19,8 +19,9 @@ function acceptBody(body: string): boolean {
     return body == "H|AIR101" || body == "E|POSITION" || body == "E|LANDING" || body == "E|MAYDAY"
 }
 function received(body: string, id: string, rssi: number): void {
-    emit("LINK", id, "AIR101|UP|" + rssi)
-    if (body.substr(0, 2) == "E|") emit("EVENT", id, "AIR101|" + body.substr(2) + "|" + rssi)
+    const trace = radioTraceId(id)
+    emit("LINK", trace, "AIR101|UP|" + rssi)
+    if (body.substr(0, 2) == "E|") emit("EVENT", trace, "AIR101|" + body.substr(2) + "|" + rssi)
 }
 function reply(id: string, result: string): void {
     const acknowledged = result == "RECEIVED" || result == "APPLIED" || result == "CANCELLED"
@@ -36,19 +37,26 @@ function delivered(tag: string, result: string): void {
 }
 let probeId = ""
 let probeStart = 0
+const PROBE_TIMEOUT_MS = 1000
+const SONAR_MIN_CM = 4
+const SONAR_MAX_CM = 400
+
 function onProbe(id: string, rssi: number): void {}
 function onProbeReply(id: string, rssi: number): void {
     if (id != probeId || !probeId) return
-    const elapsed = input.runningTime() - probeStart
-    emit("RTT", id, "OK|" + elapsed + "|" + rssi)
-    lastSeen = input.runningTime(); lastRssi = rssi
-    emit("LINK", id, "AIR101|UP|" + rssi)
+    const now = input.runningTime()
+    const elapsed = now - probeStart
+    if (elapsed >= PROBE_TIMEOUT_MS) return
+    // Serial writes may yield. Retire the probe before the timeout fiber runs.
     probeId = ""
+    lastSeen = now; lastRssi = rssi
+    emit("RTT", id, "OK|" + elapsed + "|" + rssi)
+    emit("LINK", id, "AIR101|UP|" + rssi)
 }
 function startProbe(): void {
     if (!probeId) {
         probeId = newId(); probeStart = input.runningTime()
-        radio.sendString("P" + probeId)
+        radio.sendString("P2" + probeId)
     }
 }
 function decimal(s: string, low: number, high: number): boolean {
@@ -104,7 +112,7 @@ function command(line: string): void {
         const remaining = millisUntil(deadline)
         if (remaining <= 0) { reply(id, "EXPIRED"); return }
         if (remaining > 10000) { reply(id, "BAD_COMMAND"); return }
-        if (commandIds.length >= 32 || !enqueue("T|" + p[5], id, deadline)) { reply(id, "BUSY"); return }
+        if (commandIds.length >= 32 || !enqueue("T|" + p[5], id, deadline, radioId(id.substr(0, 12)))) { reply(id, "BUSY"); return }
         remember(id, line, "")
         return
     }
@@ -152,12 +160,14 @@ basic.forever(function () {
     sensorStatus = "OFF"
     if (scanning) {
         d = sonarbit.sonarbit_distance(Distance_Unit.Distance_Unit_cm, DigitalPin.P2)
-        sensorStatus = d >= 2 && d <= 400 ? "VALID" : "NO_TARGET"
+        sensorStatus = d >= SONAR_MIN_CM && d <= SONAR_MAX_CM ? "VALID" : "NO_TARGET"
         if (sensorStatus != "VALID") d = 0
         led.plot(2, 2)
-        if (d > 0 && d <= threshold) led.plot(0, 0)
-        else led.unplot(0, 0)
+    } else {
+        led.unplot(2, 2)
     }
+    if (d > 0 && d <= threshold) led.plot(0, 0)
+    else led.unplot(0, 0)
     emit("SONAR", "0000", sensorStatus + "|" + d)
     basic.pause(250)
 })
@@ -170,8 +180,10 @@ basic.forever(function () {
 })
 let nextProbeAt = 0
 basic.forever(function () {
-    if (probeId && input.runningTime() - probeStart >= 1000) {
-        emit("RTT", probeId, "LOST|0|" + lastRssi); probeId = ""
+    if (probeId && input.runningTime() - probeStart >= PROBE_TIMEOUT_MS) {
+        const id = probeId
+        probeId = ""
+        emit("RTT", id, "LOST|0|-128")
     }
     if (!probeId && input.runningTime() >= nextProbeAt) { startProbe(); nextProbeAt = input.runningTime() + 2000 }
     basic.pause(50)

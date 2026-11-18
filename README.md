@@ -14,8 +14,10 @@ experimental and defaults to UNKNOWN until you enable local calibration.
 
 For prebuilt files, download the Windows and firmware artifacts from the same
 [successful build](https://github.com/Wondris404/Radar-Mic/actions/workflows/verify.yml).
-Choose a build containing USB protocol 2. Follow the
-[wiring, flashing, and first hardware test](docs/HARDWARE.md).
+Use the two matching HEX files from that build because the audit changed the
+radio wire format. Follow the [wiring and first hardware test](docs/HARDWARE.md).
+The [hardware audit in Slovak](docs/HARDWARE-AUDIT.sk.md) gives the verification
+scope and limitations.
 
 Install **Python 3.11 or newer** from python.org (including the `py` launcher), and
 Git for Windows. Open PowerShell:
@@ -59,7 +61,10 @@ lines are held in memory.
 ## Firmware and wiring
 
 Ground Sonar:bit: **Signal → P2, Voltage → 3V, Ground → GND**. No servo. Aircraft
-uses its built-in radio and USB power bank. Both boards must be micro:bit **V2**.
+uses its built-in radio. Power it from a computer for the first test or use a
+micro:bit battery holder with 2 × AAA cells for standalone use. The micro:bit
+Foundation advises against generic USB power banks. Both boards must be micro:bit
+**V2**.
 
 Use MakeCode JavaScript projects with `main.ts`, `radio.ts`, and `pxt.json` from
 `firmware/ground` and `firmware/aircraft`, respectively. The ground dependency is
@@ -121,8 +126,9 @@ docs/             protocol, wiring, physical limits, demo screenshot
 ```
 
 UI timers service a bounded nonblocking serial read and short command writes;
-no serial read waits for a newline. Disconnection clears pending commands and
-marks telemetry stale. Reconnection tries the selected port every 3 seconds.
+no serial read waits for a newline. Each serial write has a 50 ms timeout.
+Disconnection clears pending commands and marks telemetry stale. Reconnection
+tries the COM port selected when Connect was pressed every 3 seconds.
 Commands require a compatible HELLO and a fresh ground heartbeat. Ground text
 transmission has its own deadline so queued commands expire before the desktop
 times out, including if USB disconnects. Radio reception is independent of
@@ -148,9 +154,13 @@ Linux development uses `python3 -m venv .venv`, `.venv/bin/pip install -e '.[dev
 and `QT_QPA_PLATFORM=offscreen .venv/bin/python -m radar_mic.app --smoke-test`.
 The smoke command renders a simulated emergency and exits automatically; ordinary
 startup has no timer to exit. Host tests execute the firmware TypeScript with deterministic device I/O.
-The cross-runtime tests capture raw ground firmware serial bytes and decode them
-with the desktop parser. Install Node.js 24+ and the tooling above to run those
-tests with pytest. GitHub Actions also runs them in the firmware build job.
+The cross-runtime tests capture ground firmware serial bytes and decode them
+with the desktop parser. To also run the compiled firmware bench on Linux,
+build simulator outputs with `node scripts/build-firmware.cjs --sim` before
+running pytest. This bench runs both MakeCode simulator programs, exchanges
+packets through the simulator radio, and connects the Qt app through pyserial
+and a Linux pseudo-terminal. The Windows job packages and starts the EXE. The
+Linux job runs the virtual bench and builds the firmware artifacts.
 
 **Physical micro:bits have not been tested.** Follow the bench checklist before
 use. Sonar zero cannot distinguish a failed sensor from no echo. Only a missing

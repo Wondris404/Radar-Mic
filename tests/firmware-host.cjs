@@ -23,7 +23,7 @@ function device(role, actual = false, seed = role === 'a' ? 100 : 1000) {
   let random = seed;
   const d = {
     now: 0, sent: [], received: [], results: [], forever: [], rssi: -61,
-    serialInput: '', serialWrites: [], buttons: {},
+    serialInput: '', serialWrites: [], buttons: {}, leds: new Set(),
     get records() { return this.serialWrites.join('').split('\r\n').filter(Boolean); },
   };
   const context = vm.createContext({
@@ -55,7 +55,10 @@ function device(role, actual = false, seed = role === 'a' ? 100 : 1000) {
     sonarbit: {sonarbit_distance: () => 42},
     Distance_Unit: {Distance_Unit_cm: 1},
     DigitalPin: {P2: 2},
-    led: {plot() {}, unplot() {}},
+    led: {
+      plot(x, y) { d.leds.add(`${x},${y}`); },
+      unplot(x, y) { d.leds.delete(`${x},${y}`); },
+    },
     randint: () => random++,
     input: {runningTime: () => d.now, onButtonPressed: (button, fn) => d.buttons[button] = fn},
     RadioPacketProperty: {SignalStrength: 0},

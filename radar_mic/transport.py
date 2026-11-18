@@ -1,4 +1,4 @@
-"""All serial work is bounded and nonblocking on the Qt event loop."""
+"""Serial I/O with nonblocking reads and bounded writes."""
 from dataclasses import dataclass
 from time import monotonic
 from uuid import uuid4
@@ -18,7 +18,10 @@ class SerialTransport:
 
     def open(self, name):
         self.close()
-        self.port = serial.Serial(name, 115200, timeout=0, write_timeout=0)
+        # pyserial on Windows reports the full length for an overlapped write
+        # that is still pending when write_timeout is zero. Wait for completion
+        # with a short deadline before the next command reuses the handle.
+        self.port = serial.Serial(name, 115200, timeout=0, write_timeout=0.05)
         self.decoder = LineDecoder()
 
     def close(self):
@@ -80,9 +83,9 @@ class Delivery:
         for record in cancellations:
             self.send(record)
 
-    def abandon(self):
+    def abandon(self, reason="DISCONNECTED"):
         for ident in self.pending:
-            self.report(f"DISCONNECTED {ident} — command outcome unknown")
+            self.report(f"{reason} {ident} — command outcome unknown")
         self.pending.clear()
 
     def receive(self, record):
@@ -109,7 +112,10 @@ class Delivery:
                 del self.pending[ident]
                 operation = "CANCELLATION" if item.record.kind == "CANCEL" else "TRANSMISSION"
                 self.report(f"{operation} TIMEOUT {ident} — outcome unconfirmed")
-            elif item.attempts < 3 and now - item.last_sent >= self.RETRY_INTERVAL:
+            # Only TEXT and CANCEL carry a ground boot ID. Never replay an
+            # unacknowledged local control onto a possibly restarted board.
+            elif (item.record.kind in {"TEXT", "CANCEL"}
+                  and item.attempts < 3 and now - item.last_sent >= self.RETRY_INTERVAL):
                 self.send(item.record)
                 item.last_sent = now
                 item.attempts += 1

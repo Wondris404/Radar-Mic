@@ -11,7 +11,7 @@ function delivered(tag: string, result: string): void {
 }
 function onProbe(id: string, rssi: number): void {
     lastSeen = input.runningTime(); lastRssi = rssi
-    radio.sendString("Q" + id)
+    radio.sendString("Q2" + id)
 }
 function onProbeReply(id: string, rssi: number): void {}
 input.onButtonPressed(Button.A, function () { if (!enqueue("E|POSITION", "POSITION")) displayText("BUSY") })

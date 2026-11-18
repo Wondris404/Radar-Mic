@@ -43,14 +43,16 @@ class Simulation:
 
     def poll(self):
         self.step += 1
-        r = self.queue
+        r = [
+            Record("HELLO", "0000", ("GROUND01", "47")),
+            Record("HEART", "0000", ("GROUND01", self.BOOT_ID, str((self.step * 500) & CLOCK_MASK))),
+            *self.queue,
+        ]
         self.queue = []
         for ident, failed_at_send in self.pending_text.items():
             failed = failed_at_send or self.failed or self.loss_percent == 100
             r.append(self.text_result(ident, "RADIO_TIMEOUT" if failed else "RECEIVED"))
         self.pending_text.clear()
-        r.append(Record("HELLO", "0000", ("GROUND01", "47")))
-        r.append(Record("HEART", "0000", ("GROUND01", self.BOOT_ID, str((self.step * 500) & CLOCK_MASK))))
         if not self.sensor_failed:
             distance = int(90 + 75 * math.sin(self.step / 8))
             state = "OFF" if not self.scanning else "NO_TARGET" if self.step % 30 > 24 else "VALID"
