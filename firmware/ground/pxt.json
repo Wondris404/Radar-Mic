@@ -1,6 +1,6 @@
 {
     "name": "radar-mic-ground",
-    "description": "RADAR-MIC protocol 1 ground",
+    "description": "RADAR-MIC ground with USB protocol 2 and radio protocol 1",
     "dependencies": {
         "core": "*",
         "radio": "*",

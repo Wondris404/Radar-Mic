@@ -11,7 +11,7 @@ from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QComboBox, QLineEdit, QPlainTextEdit, QSpinBox,
     QGroupBox, QSplitter, QCheckBox, QScrollArea)
-from .protocol import parse, valid_text
+from .protocol import VERSION, parse, valid_text
 from .state import State
 from .transport import SerialTransport, Delivery, ports
 from .simulation import Simulation
@@ -99,6 +99,7 @@ class Window(QMainWindow):
         self.state = State()
         self.serial = SerialTransport()
         self.sim = None
+        self.saved_hardware_emergency = ""
         self.delivery = Delivery(self.send_record, self.log)
         self.retry_at = 0
         self.want_connection = False
@@ -187,7 +188,8 @@ class Window(QMainWindow):
         presets = QHBoxLayout()
         for text in ["TAKEOFF", "LAND", "HOLD", "RETURN"]:
             presets.addWidget(button(text, lambda checked=False, t=text: self.transmit(t)))
-        presets.addWidget(button("Clear emergency", lambda: setattr(self.state, "emergency", "")))
+        presets.addWidget(button("Cancel pending text", self.cancel_pending_text))
+        presets.addWidget(button("Acknowledge MAYDAY", lambda: setattr(self.state, "emergency", "")))
         cl.addLayout(presets)
         self.history = QPlainTextEdit(); self.history.setReadOnly(True); self.history.setMaximumBlockCount(500)
         cl.addWidget(self.history)
@@ -221,9 +223,12 @@ class Window(QMainWindow):
 
     def change_mode(self, index):
         self.disconnect_port()
+        if self.sim is None:
+            self.saved_hardware_emergency = self.state.emergency
         self.state.reset()
         self.sim = Simulation() if index else None
-        self.delivery.pending.clear()
+        if self.sim is None:
+            self.state.emergency = self.saved_hardware_emergency
         self.demo_controls.setVisible(bool(index))
         for widget in (self.port_box,): widget.setEnabled(not index)
         self.radio_fail.setChecked(False); self.sensor_fail.setChecked(False)
@@ -235,29 +240,44 @@ class Window(QMainWindow):
         self.want_connection = True
         try:
             name = self.port_box.currentData() if self.port_box.currentIndex() >= 0 and self.port_box.currentText() == self.port_box.itemText(self.port_box.currentIndex()) else self.port_box.currentText()
+            if self.serial.port:
+                self.close_link(cancel=True)
             self.serial.open(name)
-            self.state.reset()
-            self.log(f"Serial open: {name}; waiting for protocol 1 HELLO")
+            self.state.reset(preserve_emergency=True)
+            self.log(f"Serial open: {name} — waiting for protocol {VERSION} HELLO and heartbeat")
         except (OSError, ValueError) as e:
             self.log(str(e)); self.retry_at = monotonic() + 3
 
     def disconnect_port(self):
         self.want_connection = False
+        self.close_link(cancel=True)
+
+    def close_link(self, *, cancel=False):
+        if cancel:
+            self.cancel_pending_text()
         self.serial.close()
-        if self.delivery.pending: self.log("Disconnected: pending deliveries unconfirmed")
-        self.delivery.pending.clear()
-        self.state.reset()
+        self.delivery.abandon()
+        self.state.reset(preserve_emergency=True)
+
+    def cancel_pending_text(self):
+        try:
+            self.delivery.cancel_text()
+        except OSError as error:
+            self.log(f"Could not send cancellation: {error}")
 
     def send_record(self, record):
         if self.sim: self.sim.send(record)
         else: self.serial.send(record)
 
     def command(self, kind, *fields):
-        if not self.state.compatible:
-            self.log("Command unavailable: waiting for compatible ground firmware")
+        now = monotonic()
+        self.state.tick(now)
+        if not self.state.compatible or not self.state.heartbeat_alive(now):
+            self.log(f"Command unavailable — waiting for protocol {VERSION} and a fresh ground heartbeat")
             return
         try:
-            ident = self.delivery.command(kind, *fields)
+            command_fields = (*self.state.text_lease(), *fields) if kind == "TEXT" else fields
+            ident = self.delivery.command(kind, *command_fields, now=now)
             self.log(f"TX {ident} {kind}: {' '.join(fields)}")
         except (OSError, ValueError) as e: self.log(str(e))
 
@@ -293,13 +313,20 @@ class Window(QMainWindow):
             self.delivery.tick(now)
         except (OSError, ValueError) as e:
             self.log(f"Serial error: {e}; reconnect in 3s")
-            self.serial.close(); self.state.reset(); self.delivery.pending.clear(); self.retry_at = now+3
+            self.close_link()
+            self.retry_at = now + 3
         self.state.tick(now)
         self.render_state()
 
     def render_state(self):
         s = self.state
-        self.banner.setText("DEMO / SIMULATION • ALL MEASUREMENTS GENERATED" if self.sim else "HARDWARE • " + ("protocol 1 / GROUND01 compatible" if s.compatible else "waiting for ground heartbeat / disconnected"))
+        heartbeat = s.heartbeat_alive(monotonic())
+        if self.sim:
+            self.banner.setText("DEMO / SIMULATION • ALL MEASUREMENTS GENERATED")
+        elif s.compatible and heartbeat:
+            self.banner.setText(f"HARDWARE • protocol {VERSION} / GROUND01 compatible")
+        else:
+            self.banner.setText(f"HARDWARE • waiting for protocol {VERSION} HELLO and heartbeat")
         self.alert.setText(s.emergency)
         self.obstacle.setText(s.obstacle + (" • OBSTACLE WARNING" if s.distance is not None and s.distance <= s.threshold else ""))
         rtt = f"{s.latest_rtt} ms / avg {sum(s.rtts)/len(s.rtts):.1f} / min {min(s.rtts)} / max {max(s.rtts)}" if s.rtts else "—"
@@ -307,14 +334,16 @@ class Window(QMainWindow):
         proximity = s.calibration.classify(s.rssi) if s.link else "UNKNOWN (no current signal)"
         if s.calibration.near <= s.calibration.far: proximity = "UNKNOWN (invalid calibration thresholds)"
         self.info.setText(f"{'LINK ACTIVE' if s.link else 'AIRCRAFT SIGNAL LOST'}\nLast event: {s.last_message}\nRSSI: {s.rssi if s.link else '—'} dBm • {proximity}\nRTT latest: {rtt}\nPacket loss: {loss}\nLast seen: {s.last_seen}\nSource: radio • link metrics only; RTT is not distance")
-        self.status.setText(f"Sensor: {s.sensor} • confidence: {'direct, beam/range limited' if s.distance is not None else 'no valid measurement'} • Heartbeat: {'OK' if s.compatible else 'MISSING'} • radio group 47 / band 7")
+        self.status.setText(f"Sensor: {s.sensor} • confidence: {'direct, beam/range limited' if s.distance is not None else 'no valid measurement'} • Heartbeat: {'OK' if heartbeat else 'MISSING'} • radio group 47 / band 7")
         self.sonar_chart.values = s.distances
         self.rssi_chart.values = s.signals
         self.radar.phase += .05
         self.radar.update(); self.sonar_chart.update(); self.rssi_chart.update()
 
     def closeEvent(self, event):
-        self.timer.stop(); self.serial.close(); event.accept()
+        self.timer.stop()
+        self.close_link(cancel=True)
+        event.accept()
 
 
 STYLE = """

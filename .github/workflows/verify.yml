@@ -27,7 +27,11 @@ jobs:
         with:
           node-version: '24'
       - run: npm ci --prefix tools --ignore-scripts
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
       - run: node tests/radio.test.cjs
+      - run: python -m unittest discover -s tests -p test_firmware_serial.py -v
       - run: node scripts/build-firmware.cjs
       - uses: actions/upload-artifact@v4
         with:

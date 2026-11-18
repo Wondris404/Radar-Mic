@@ -9,7 +9,12 @@ let commandIds: string[] = []
 let commandBodies: string[] = []
 let commandResults: string[] = []
 let commandTimes: number[] = []
-function emit(kind: string, id: string, fields: string): void { serial.writeLine("1|" + kind + "|" + id + "|" + fields) }
+const bootId = hex4(randint(0, 65535)) + hex4(randint(0, 65535)) + hex4(randint(0, 65535)) + hex4(randint(0, 65535))
+
+function emit(kind: string, id: string, fields: string): void {
+    // MakeCode writeLine pads to a 32-byte boundary before CRLF.
+    serial.writeString("2|" + kind + "|" + id + "|" + fields + "\r\n")
+}
 function acceptBody(body: string): boolean {
     return body == "H|AIR101" || body == "E|POSITION" || body == "E|LANDING" || body == "E|MAYDAY"
 }
@@ -17,12 +22,16 @@ function received(body: string, id: string, rssi: number): void {
     emit("LINK", id, "AIR101|UP|" + rssi)
     if (body.substr(0, 2) == "E|") emit("EVENT", id, "AIR101|" + body.substr(2) + "|" + rssi)
 }
-function delivered(tag: string, ok: boolean): void {
+function reply(id: string, result: string): void {
+    const acknowledged = result == "RECEIVED" || result == "APPLIED" || result == "CANCELLED"
+    emit(acknowledged ? "ACK" : "ERROR", id, result)
+}
+function delivered(tag: string, result: string): void {
     if (tag == "HEART") return
     const i = commandIds.indexOf(tag)
     if (i >= 0) {
-        commandResults[i] = ok ? "DELIVERED" : "RADIO_TIMEOUT"
-        emit(ok ? "ACK" : "ERROR", tag, commandResults[i])
+        commandResults[i] = result
+        reply(tag, result)
     }
 }
 let probeId = ""
@@ -47,32 +56,73 @@ function decimal(s: string, low: number, high: number): boolean {
     for (let i = 0; i < s.length; i++) if ("0123456789".indexOf(s.charAt(i)) < 0) return false
     return parseInt(s) >= low && parseInt(s) <= high
 }
+function remember(id: string, line: string, result: string): void {
+    commandIds.push(id)
+    commandBodies.push(line)
+    commandResults.push(result)
+    commandTimes.push(input.runningTime())
+}
+
 function command(line: string): void {
     const p = line.split("|")
-    if (p.length != 4 || p[0] != "1" || p[2].length != 4 || !isHex(p[2])) { emit("ERROR", "0000", "BAD_RECORD"); return }
+    if (p.length < 4 || p[0] != "2" || p[2].length != 32 || !isHex(p[2])) {
+        emit("ERROR", "0000", "BAD_RECORD")
+        return
+    }
     const kind = p[1], id = p[2], value = p[3]
     const now = input.runningTime()
     while (commandTimes.length && now - commandTimes[0] > 30000) {
         commandIds.shift(); commandBodies.shift(); commandResults.shift(); commandTimes.shift()
     }
-    let slot = commandIds.indexOf(id)
-    if (slot >= 0) {
-        if (commandBodies[slot] != line) { emit("ERROR", id, "ID_CONFLICT"); return }
-        const result = commandResults[slot]
-        if (result) emit(result == "RADIO_TIMEOUT" ? "ERROR" : "ACK", id, result)
+    const slot = commandIds.indexOf(id)
+    if (kind == "CANCEL") {
+        if (p.length != 4) { reply(id, "BAD_COMMAND"); return }
+        if (value != bootId) { reply(id, "STALE_BOOT"); return }
+        if (slot >= 0) {
+            if (commandResults[slot]) reply(id, commandResults[slot])
+            else {
+                stopQueued(id)
+                delivered(id, "CANCELLED")
+            }
+        } else if (commandIds.length < 32) {
+            // Retain a tombstone in case a retry arrives after cancellation.
+            remember(id, "", "CANCELLED")
+            reply(id, "CANCELLED")
+        } else reply(id, "BUSY")
         return
     }
-    const valid = (kind == "TEXT" && safeText(value)) || (kind == "SCAN" && (value == "0" || value == "1")) || (kind == "THRESH" && decimal(value, 2, 400)) || (kind == "PING" && value == "AIR101")
-    if (!valid) { emit("ERROR", id, "BAD_COMMAND"); return }
-    if (commandIds.length >= 32) { emit("ERROR", id, "BUSY"); return }
-    if (kind == "TEXT" && !enqueue("T|" + value, id)) { emit("ERROR", id, "BUSY"); return }
-    commandIds.push(id); commandBodies.push(line); commandResults.push(""); commandTimes.push(now)
-    if (kind == "TEXT") return
+    if (slot >= 0) {
+        if (commandResults[slot] == "CANCELLED") reply(id, "CANCELLED")
+        else if (commandBodies[slot] != line) reply(id, "ID_CONFLICT")
+        else if (commandResults[slot]) reply(id, commandResults[slot])
+        return
+    }
+    if (kind == "TEXT") {
+        if (p.length != 6 || !safeText(p[5]) || !isClock(p[4])) { reply(id, "BAD_COMMAND"); return }
+        if (value != bootId) { reply(id, "STALE_BOOT"); return }
+        const deadline = parseInt(p[4])
+        const remaining = millisUntil(deadline)
+        if (remaining <= 0) { reply(id, "EXPIRED"); return }
+        if (remaining > 10000) { reply(id, "BAD_COMMAND"); return }
+        if (commandIds.length >= 32 || !enqueue("T|" + p[5], id, deadline)) { reply(id, "BUSY"); return }
+        remember(id, line, "")
+        return
+    }
+    const valid = (kind == "SCAN" && (value == "0" || value == "1"))
+        || (kind == "THRESH" && decimal(value, 2, 400)) || (kind == "PING" && value == "AIR101")
+    if (p.length != 4 || !valid) { reply(id, "BAD_COMMAND"); return }
+    if (commandIds.length >= 32) { reply(id, "BUSY"); return }
     if (kind == "SCAN") scanning = value == "1"
     if (kind == "THRESH") threshold = parseInt(value)
     if (kind == "PING") startProbe()
-    slot = commandIds.indexOf(id); commandResults[slot] = "APPLIED"
-    emit("ACK", id, "APPLIED")
+    remember(id, line, "APPLIED")
+    reply(id, "APPLIED")
+}
+
+function isClock(s: string): boolean {
+    if (!s.length || s.length > 10) return false
+    for (let i = 0; i < s.length; i++) if ("0123456789".indexOf(s.charAt(i)) < 0) return false
+    return parseInt(s) <= 0x3fffffff
 }
 // Poll characters with a bound instead of allowing an unterminated line to allocate forever.
 let serialLine = ""
@@ -82,11 +132,15 @@ basic.forever(function () {
     for (let i = 0; i < data.length; i++) {
         const c = data.charAt(i)
         if (c == "\n") {
-            if (!serialDiscard) command(serialLine)
+            if (!serialDiscard) {
+                if (serialLine.charAt(serialLine.length - 1) == "\r") serialLine = serialLine.substr(0, serialLine.length - 1)
+                if (serialLine.length <= 240) command(serialLine)
+                else emit("ERROR", "0000", "LINE_TOO_LONG")
+            }
             serialLine = ""; serialDiscard = false
-        } else if (c != "\r" && !serialDiscard) {
+        } else if (!serialDiscard) {
             serialLine += c
-            if (serialLine.length > 240) { serialLine = ""; serialDiscard = true; emit("ERROR", "0000", "LINE_TOO_LONG") }
+            if (serialLine.length > 241) { serialLine = ""; serialDiscard = true; emit("ERROR", "0000", "LINE_TOO_LONG") }
         }
     }
     basic.pause(10)
@@ -109,7 +163,7 @@ basic.forever(function () {
 })
 basic.forever(function () {
     emit("HELLO", "0000", "GROUND01|47")
-    emit("HEART", "0000", "GROUND01|" + input.runningTime())
+    emit("HEART", "0000", "GROUND01|" + bootId + "|" + clockMs())
     if (input.runningTime() - lastSeen >= 7000) emit("LINK", "0000", "AIR101|LOST|" + lastRssi)
     enqueue("H|GROUND01", "HEART")
     basic.pause(2000)

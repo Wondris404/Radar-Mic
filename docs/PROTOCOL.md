@@ -1,61 +1,84 @@
-# RADAR-MIC protocol v1
+# RADAR-MIC protocol
 
-## USB serial
+## USB serial v2
 
-115200 baud, 8N1, USB CDC, ASCII, one record per LF; CRLF accepted.
-`1|TYPE|hhhh|field[|field...]` with a four lowercase hexadecimal command ID.
-Maximum line: 240 bytes excluding LF. Invalid lines are rejected; overlong lines
-are discarded through LF. No escaping: user text must be 1–80 printable ASCII
-characters (32–126), excluding `|`. No Unicode. There is no JSON on the micro:bit.
+Use the matching v2 desktop app and ground firmware. The radio format is still v1.
+The link uses 115200 baud, 8N1 and ASCII. The desktop sends LF and the ground sends
+CRLF. One record is `2|TYPE|id|field[|field...]`. The ground emits the record and
+its terminator in a single `serial.writeString` call because MakeCode
+`serial.writeLine` inserts spaces before CRLF by default.
 
-PC commands (exact field counts):
+The line limit is 240 bytes before the terminator. Overlong lines are discarded
+through LF. Text is 1–80 printable ASCII characters (32–126), excluding `|`.
+Leading and trailing spaces in TEXT are preserved. Numeric and enum fields cannot
+contain padding.
 
-| Type | Fields | Meaning |
+| PC command | Fields | Meaning |
 |---|---|---|
-| TEXT | text | Deliver text to AIR101 |
+| TEXT | boot_id,deadline_ms,text | Send expiring text to AIR101 |
+| CANCEL | boot_id | Stop further attempts for this TEXT ID |
 | SCAN | 0 or 1 | Stop/start P2 sampling |
 | THRESH | integer 2–400 | Obstacle threshold in cm |
-| PING | AIR101 | Start one probe if none outstanding |
+| PING | AIR101 | Start a probe if none is outstanding |
 
-Ground records:
-
-| Type | Fields | Meaning |
+| Ground record | Fields | Meaning |
 |---|---|---|
-| HELLO | GROUND01,47 | Firmware protocol 1 and radio group compatibility |
-| HEART | GROUND01,uptime_ms | Ground heartbeat every 2 s |
-| SONAR | VALID/NO_TARGET/OFF/FAULT,cm | VALID is 2–400; others use 0 |
+| HELLO | GROUND01,47 | USB compatibility and radio group |
+| HEART | GROUND01,boot_id,uptime_ms | Ground heartbeat every 2 seconds |
+| SONAR | VALID/NO_TARGET/OFF/FAULT,cm | VALID is 2–400; other states use 0 |
 | LINK | AIR101,UP/LOST,rssi | Latest link state; RSSI -128 means unknown |
-| EVENT | AIR101,POSITION/LANDING/MAYDAY,rssi | Aircraft button event; RSSI at ground reception |
-| RTT | OK/LOST,milliseconds,rssi | Probe outcome; LOST has 0 ms (not a measurement) |
-| ACK | APPLIED/DELIVERED | Command applied, or full radio text acknowledged |
-| ERROR | reason | BAD_RECORD, BAD_COMMAND, ID_CONFLICT, BUSY, LINE_TOO_LONG, RADIO_TIMEOUT |
+| EVENT | AIR101,POSITION/LANDING/MAYDAY,rssi | Aircraft button event and ground RSSI |
+| RTT | OK/LOST,milliseconds,rssi | Probe outcome; LOST uses a 0 ms placeholder |
+| ACK | APPLIED/RECEIVED/CANCELLED | Ground action applied, aircraft receipt confirmed, or ground stopped sending |
+| ERROR | reason | BAD_RECORD, BAD_COMMAND, ID_CONFLICT, BUSY, LINE_TOO_LONG, RADIO_TIMEOUT, EXPIRED, STALE_BOOT |
 
-Examples:
+PC command IDs are 32 lowercase hex digits generated from fresh UUIDv4 values.
+ACK and ERROR echo the ID. Unattributed errors and periodic telemetry use
+`0000`. EVENT, RTT and LINK can carry a four-digit radio packet ID. Logs use
+UTC receipt time.
 
 ```text
-1|HELLO|0000|GROUND01|47
-1|TEXT|0001|AIR101 HOLD
-1|ACK|0001|DELIVERED
-1|EVENT|03af|AIR101|LANDING|-63
-1|EVENT|03b0|AIR101|MAYDAY|-70
-1|SONAR|0000|VALID|42
-1|RTT|1111|OK|28|-65
-1|LINK|0000|AIR101|LOST|-65
+2|HELLO|0000|GROUND01|47
+2|HEART|0000|GROUND01|0123456789abcdef|2000
+2|TEXT|d7aad368090c4bbf8254d5a5595af957|0123456789abcdef|12000|AIR101 HOLD
+2|ACK|d7aad368090c4bbf8254d5a5595af957|RECEIVED
+2|CANCEL|6b46fa77b0414e68a6ce813190a3c703|0123456789abcdef
+2|ACK|6b46fa77b0414e68a6ce813190a3c703|CANCELLED
+2|EVENT|03af|AIR101|LANDING|-63
+2|EVENT|03b0|AIR101|MAYDAY|-70
+2|SONAR|0000|VALID|42
+2|RTT|1111|OK|28|-65
+2|LINK|0000|AIR101|LOST|-65
 ```
 
-IDs in ACK/ERROR echo the PC command. EVENT IDs identify a radio message;
-RTT IDs identify probes. Periodic telemetry uses `0000`. PC logs use UTC receipt
-time, not aircraft time; firmware timers are monotonic uptime.
+A fresh HELLO and HEART are required to send PC commands. HEART goes stale after
+five seconds even if other telemetry is still flowing. Its 16-digit `boot_id`
+changes on ground restart, and its uptime wraps modulo 2³⁰ milliseconds.
 
-PC allows eight outstanding commands, retries the same ID every 4 s, maximum
-three attempts. Ground caches up to 32 command IDs/results for 30 s and rejects
-new commands with BUSY if full. Identical retries replay final results without
-reapplying; conflicting reuse returns ID_CONFLICT. TEXT gets its final ACK only
-after radio reassembly is acknowledged. ACK means accepted by aircraft firmware,
-not that a human read the text or that LED scrolling finished. Lost ACKs can leave
-successful deliveries unconfirmed. No persistence or exactly-once guarantee across
-reboot, reconnect, ID collision, or cache expiry. Reconnecting clears pending PC
-commands; they are not automatically replayed into a restarted device.
+TEXT carries an absolute deadline of the latest observed ground uptime plus
+10 seconds, on that same wrapping clock. The board rejects another boot's
+messages and expires queued or active text before sending another fragment.
+Retries keep the original deadline. The desktop stops retrying and reports an
+unconfirmed outcome after 12 seconds from its original send, even if the UI
+timer was delayed. This leaves headroom for board processing and does not
+require synchronizing wall clocks.
+
+The PC tracks up to eight commands with up to three USB attempts spaced four
+seconds apart. The board caches up to 32 commands and results for 30 seconds.
+Identical retries replay cached results without applying commands again.
+Conflicting reuse returns ID_CONFLICT. Cancellation reuses the TEXT ID and boot
+ID. The board removes queued work or stops remaining fragments, remembers the
+cancellation, and acknowledges it. If receipt was already confirmed, the board
+replays RECEIVED. Once the PC requests cancellation it only retries CANCEL.
+A USB interruption can prevent cancellation confirmation, while the board's
+deadline still applies. New connections do not replay outstanding commands.
+
+RECEIVED confirms that the aircraft firmware reassembled the text and accepted
+it for LED display. A person reading the text or the end of LED scrolling is
+outside this acknowledgment. RADIO_TIMEOUT and desktop TRANSMISSION TIMEOUT
+mean receipt is unconfirmed. CANCELLED confirms no further attempts on the
+ground; an already transmitted packet can still have been received. A late
+reply is logged with its actual outcome.
 
 ## Built-in radio
 
@@ -80,9 +103,12 @@ Every sendString is **≤19 ASCII characters**:
 
 Example for `T|AIR101 HOLD`: `D012302T|AIR101 HOL`, `D012312D`, then `K0123`.
 IDs increment modulo 65536, randomized at boot. They are not security nonces.
-A sender queues at most eight messages, one active at a time; fragments are
-spaced by 12 ms in a dedicated fiber. Retry after 650 ms, maximum three complete
-transmissions. Receiver holds at most four partial messages, each ≤96 characters,
+A sender queues at most eight routine messages. Aircraft MAYDAY has its own
+reserved slot and takes precedence over routine messages, including retries.
+A repeated A+B press while an emergency is active refers to the same outstanding
+message. Its pending, acknowledged, or failed status has a reserved LED display
+slot. Fragments are spaced by 12 ms in a dedicated fiber. The sender retries
+after 650 ms, with up to three attempts. Receiver holds at most four partial messages, each ≤96 characters,
 with a 3 s lifetime from first fragment. Out-of-order fragments are supported;
 identical fragment duplicates are harmless; conflicting fragments/counts are
 ignored. Completed IDs are retained for up to 30 s (maximum 32); duplicates are
@@ -95,5 +121,6 @@ Ground probes run every 2 s with a 1 s timeout and are separate from delivery re
 firmware scheduling and packet processing, and reports one OK or LOST per probe.
 The desktop summarizes up to 120 outcomes, successful RTTs and RSSI samples.
 Neither RTT nor RSSI is converted to meters, altitude, or coordinates.
-After 7 s without valid radio traffic the link is LOST. Ground telemetry is stale
-after 5 s; sonar stream after 2 s. Separate clocks need no synchronization.
+After 7 seconds without valid radio traffic the link is LOST. The desktop tracks
+USB heartbeat freshness separately from the sonar stream, which goes stale
+after 2 seconds without a sample.

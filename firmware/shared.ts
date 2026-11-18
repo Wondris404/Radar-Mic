@@ -18,19 +18,59 @@ function safeText(s: string): boolean {
     for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) < 32 || s.charCodeAt(i) > 126 || s.charAt(i) == "|") return false
     return true
 }
-let txIds: string[] = []
-let txBodies: string[] = []
-let txTags: string[] = []
-let active = ""
-let activeBody = ""
-let activeTag = ""
-let tries = 0
-let sentAt = 0
-let sending = false
-function enqueue(body: string, tag: string): boolean {
-    if (txIds.length >= 8 || body.length > 96) return false
-    txIds.push(newId()); txBodies.push(body); txTags.push(tag)
+// Match the serial protocol's wrapping ground uptime clock.
+function clockMs(): number { return input.runningTime() & 0x3fffffff }
+function millisUntil(deadline: number): number {
+    return ((deadline - clockMs() + 0x20000000) & 0x3fffffff) - 0x20000000
+}
+
+class Transmission {
+    id: string
+    body: string
+    tag: string
+    deadline: number
+    tries = 0
+    sentAt = 0
+
+    constructor(body: string, tag: string, deadline: number) {
+        this.id = newId()
+        this.body = body
+        this.tag = tag
+        this.deadline = deadline
+    }
+
+    expired(): boolean {
+        return this.deadline >= 0 && millisUntil(this.deadline) <= 0
+    }
+}
+
+let outgoing: Transmission[] = []
+let active: Transmission = null
+let emergency: Transmission = null
+
+function enqueue(body: string, tag: string, deadline = -1): boolean {
+    if (outgoing.length >= 8 || !body.length || body.length > 96) return false
+    outgoing.push(new Transmission(body, tag, deadline))
     return true
+}
+
+function enqueueEmergency(): void {
+    // A second press while a MAYDAY is outstanding refers to the same alert.
+    if (!emergency) emergency = new Transmission("E|MAYDAY", "MAYDAY", -1)
+    displayPriority = "MAYDAY PENDING"
+}
+
+function stopQueued(tag: string): void {
+    if (active && active.tag == tag) active = null
+    for (let i = outgoing.length - 1; i >= 0; i--) {
+        if (outgoing[i].tag == tag) outgoing.removeAt(i)
+    }
+}
+
+function complete(tx: Transmission, result: string): void {
+    if (tx == emergency) emergency = null
+    if (tx == active) active = null
+    delivered(tx.tag, result)
 }
 let rxIds: string[] = []
 let rxCounts: number[] = []
@@ -52,11 +92,11 @@ radio.onReceivedString(function (packet: string) {
     const id = packet.substr(1, 4)
     const rssi = radio.receivedPacket(RadioPacketProperty.SignalStrength)
     if (packet.charAt(0) == "K" && packet.length == 5) {
-        if (id == active) {
+        const tx = emergency && id == emergency.id ? emergency : active
+        if (tx && id == tx.id) {
             lastSeen = input.runningTime(); lastRssi = rssi
-            const tag = activeTag
-            active = ""; activeTag = ""
-            delivered(tag, true)
+            // The ACK is evidence that the aircraft accepted an earlier attempt.
+            complete(tx, "RECEIVED")
         }
         return
     }
@@ -94,35 +134,47 @@ radio.onReceivedString(function (packet: string) {
 })
 basic.forever(function () {
     prune()
-    if (!active && !sending && txIds.length) {
-        active = txIds.shift(); activeBody = txBodies.shift(); activeTag = txTags.shift(); tries = 0
+    for (let i = outgoing.length - 1; i >= 0; i--) {
+        const queued = outgoing[i]
+        if (queued.expired()) {
+            outgoing.removeAt(i)
+            delivered(queued.tag, "EXPIRED")
+        }
     }
-    if (active && !sending && (tries == 0 || input.runningTime() - sentAt >= 650)) {
-        if (tries >= 3) {
-            const tag = activeTag
-            active = ""; activeTag = ""; delivered(tag, false)
+    if (active && active.expired()) complete(active, "EXPIRED")
+    if (!active && outgoing.length && !emergency) active = outgoing.shift()
+    const tx = emergency || active
+    if (tx && (tx.tries == 0 || input.runningTime() - tx.sentAt >= 650)) {
+        if (tx.tries >= 3) {
+            complete(tx, "RADIO_TIMEOUT")
         } else {
-            sending = true
-            const id = active
-            const body = activeBody
-            const count = Math.ceil(body.length / 12)
-            tries += 1
+            const count = Math.ceil(tx.body.length / 12)
+            tx.tries += 1
             for (let i = 0; i < count; i++) {
-                radio.sendString("D" + id + i + count + body.substr(i * 12, 12))
+                // Yielding between fragments allows ACK, cancellation and MAYDAY to
+                // take effect before emitting another fragment.
+                if (tx != (emergency || active) || tx.expired()) break
+                radio.sendString("D" + tx.id + i + count + tx.body.substr(i * 12, 12))
                 basic.pause(12)
             }
-            sentAt = input.runningTime()
-            sending = false
+            tx.sentAt = input.runningTime()
         }
     }
     basic.pause(20)
 })
 let displayQueue: string[] = []
+let displayPriority = ""
 function displayText(s: string): void {
     if (displayQueue.length < 8) displayQueue.push(s)
 }
 // Scrolling yields in its own fiber; packet receive handlers never scroll.
 basic.forever(function () {
-    if (displayQueue.length) basic.showString(displayQueue.shift(), 90)
+    if (displayPriority) {
+        const text = displayPriority
+        displayPriority = ""
+        basic.showString(text, 90)
+    } else if (displayQueue.length) {
+        basic.showString(displayQueue.shift(), 90)
+    }
     basic.pause(50)
 })

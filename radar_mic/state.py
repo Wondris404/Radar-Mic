@@ -3,7 +3,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Protocol
-from .protocol import Record
+from .protocol import CLOCK_MASK, TEXT_LEASE_MS, Record
 
 
 class RangingProvider(Protocol):
@@ -28,10 +28,12 @@ class State:
         self.calibration = Calibration()
         self.reset()
 
-    def reset(self):
+    def reset(self, *, preserve_emergency=False):
         self.compatible = False
-        self.connected = False
-        self.last_ground = None
+        self.last_hello = None
+        self.last_heartbeat = None
+        self.ground_boot = None
+        self.ground_clock = None
         self.last_radio = None
         self.last_sonar = None
         self.last_seen = "—"
@@ -40,7 +42,8 @@ class State:
         self.rssi = None
         self.link = False
         self.last_message = "—"
-        self.emergency = ""
+        if not preserve_emergency:
+            self.emergency = ""
         self.rtts = deque(maxlen=120)
         self.probes = deque(maxlen=120)
         self.distances = deque(maxlen=120)
@@ -49,9 +52,13 @@ class State:
         self.latest_rtt = None
 
     def apply(self, record: Record, now: float):
-        self.last_ground = now
         k, f = record.kind, record.fields
-        if k == "HELLO": self.compatible = True
+        if k == "HELLO":
+            self.last_hello = now
+            self.compatible = True
+        if k == "HEART":
+            self.last_heartbeat = now
+            self.ground_boot, self.ground_clock = f[1], int(f[2])
         if k == "SONAR":
             self.last_sonar = now
             self.sensor = f[0]
@@ -80,9 +87,15 @@ class State:
             self.sensor, self.distance = "UNAVAILABLE", None
         if self.last_radio is None or now - self.last_radio > 7:
             self.link = False
-        if self.last_ground is None or now - self.last_ground > 5:
-            self.compatible = False
+        self.compatible = self.last_hello is not None and now - self.last_hello <= 5
+        if not self.heartbeat_alive(now):
             self.link = False
+
+    def heartbeat_alive(self, now):
+        return self.last_heartbeat is not None and now - self.last_heartbeat <= 5
+
+    def text_lease(self):
+        return self.ground_boot, str((self.ground_clock + TEXT_LEASE_MS) & CLOCK_MASK)
 
     @property
     def loss(self):

@@ -11,34 +11,51 @@ The power bank must stay on at the micro:bit's low load.
 
 ## Flash
 
-Open https://makecode.microbit.org/ and create two projects in JavaScript mode.
-For each project paste its `firmware/<role>/main.ts`; use Explorer → + to create
-`radio.ts` and paste `firmware/<role>/radio.ts`. Open `pxt.json` and replace it
-with the corresponding committed file, preserving the two TypeScript files.
-The ground project pins the official ELECFREAKS Sonar:bit extension; allow its
-installation. Alternatively import the repository HEX artifacts after downloading
-the Actions firmware artifact (when available). Download and copy each compiled
-HEX to the correct device's MICROBIT drive. Label the boards GROUND01 and AIR101.
-Do not flash both boards with the same program.
+Download **RADAR-MIC-Firmware** and **RADAR-MIC-Windows** from the same successful
+[Actions run](https://github.com/Wondris404/Radar-Mic/actions/workflows/verify.yml).
+Sign in to GitHub to download artifacts. Choose a run that includes USB protocol 2.
+The v2 desktop app requires the v2 ground firmware.
 
-CLI build is described in the README. Build products are universal micro:bit HEX
-files from MakeCode; these projects are intended and tested at compile time for V2.
+1. Extract the firmware artifact. Connect the ground micro:bit V2 with a USB data
+   cable. Copy `radar-mic-ground.hex` to its `MICROBIT` drive and wait for the
+   board to finish flashing.
+2. Connect the aircraft micro:bit V2 separately. Copy
+   `radar-mic-aircraft.hex` to its `MICROBIT` drive. Wait for flashing to finish
+   before moving the aircraft board to its USB power bank.
+3. Open the Windows artifact, extract `RADAR-MIC-Windows.zip`, and keep
+   `RADAR-MIC.exe` with its accompanying files. Launch the EXE from there.
+
+For source builds, use the CLI commands in the README. You can also open each HEX
+in [MakeCode](https://makecode.microbit.org/) or create separate JavaScript
+projects using each role's `main.ts`, `radio.ts` and `pxt.json`.
+The ground manifest pins the official ELECFREAKS Sonar:bit extension.
 
 ## First bench test
 
-1. Power aircraft, connect ground over a USB **data** cable. Close MakeCode serial
-   console/other COM-port software before opening RADAR-MIC.
-2. Select Hardware, Discover ports, select the micro:bit COM port, Connect.
-   Wait for compatible protocol/ground heartbeat and LINK ACTIVE.
-3. Type `AIR101 HOLD`, SEND. Expect TX then ACK DELIVERED and aircraft scrolling.
-4. Aircraft A → POSITION with RSSI on PC and ACK POSITION on aircraft. B → LANDING
-   notification; A+B → timestamped red MAYDAY; clear the PC latch after checking.
-5. Place a flat obstacle 20–100 cm in front of ground sensor. Compare the displayed
-   centimeters with a ruler. Move it away/out of view: NO ULTRASONIC TARGET.
-6. Ground A toggles scanning. B scrolls link/sensor status without blocking radio.
-7. Unplug aircraft power: within 7 seconds AIRCRAFT SIGNAL LOST; sonar continues.
-   Unplug ground USB: stale sonar becomes UNAVAILABLE; reconnect is attempted every
-   3 seconds. Re-select port if Windows assigns a different COM number.
+1. With the ground board disconnected, wire the sensor **Signal → P2, Voltage →
+   3V, Ground → GND**. Connect ground to the PC over a USB data cable, power the
+   aircraft, and close any MakeCode serial console or other COM-port software.
+2. In RADAR-MIC, choose **HARDWARE**, click **Discover ports**, select the ground
+   board's COM port, then click **Connect**. You can check the COM number in
+   Windows Device Manager under **Ports (COM & LPT)**. Wait for **protocol 2 /
+   GROUND01 compatible**, **Heartbeat: OK**, and **LINK ACTIVE**.
+3. Type `AIR101 HOLD` and click **SEND**. Expect a TX log entry followed by
+   **ACK RECEIVED** and verify that the aircraft scrolls the text.
+4. Press aircraft **A** for POSITION, **B** for LANDING, then **A+B** for MAYDAY.
+   Check that the PC displays the red timestamped MAYDAY banner. Unplug and
+   reconnect ground USB. Confirm the alert stays visible, then click
+   **Acknowledge MAYDAY** to clear it.
+5. Place a flat obstacle 20–100 cm in front of the sensor. Compare the reading
+   with a ruler, then move the obstacle away and check **NO ULTRASONIC TARGET**.
+   Ground **A** toggles scanning and **B** scrolls link/sensor status.
+6. Switch off aircraft power and send a test message. Check for
+   **AIRCRAFT SIGNAL LOST** within 7 seconds and a radio timeout or expiry with
+   unconfirmed reception. To cancel pending text, click **Cancel pending text**
+   and check the log for the ground result.
+
+Reconnection uses the selected port. Re-select it if Windows assigns a different
+COM number. A disconnection resets telemetry and outstanding PC delivery state,
+while the MAYDAY banner stays latched within the running app.
 
 ## Limits and calibration
 

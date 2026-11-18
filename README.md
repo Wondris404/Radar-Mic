@@ -12,6 +12,11 @@ experimental and defaults to UNKNOWN until you enable local calibration.
 
 ## Windows 11 quick start
 
+For prebuilt files, download the Windows and firmware artifacts from the same
+[successful build](https://github.com/Wondris404/Radar-Mic/actions/workflows/verify.yml).
+Choose a build containing USB protocol 2. Follow the
+[wiring, flashing, and first hardware test](docs/HARDWARE.md).
+
 Install **Python 3.11 or newer** from python.org (including the `py` launcher), and
 Git for Windows. Open PowerShell:
 
@@ -36,17 +41,20 @@ For real operation:
 
 Flash the two boards as described below, connect **GROUND01** by USB, choose
 **HARDWARE**, Discover ports, select its COM port and Connect. Manual COM entry is
-supported. Wait for protocol 1 compatibility and LINK ACTIVE. Type `AIR101 HOLD`
-and press SEND. ACK DELIVERED means aircraft firmware accepted it; the aircraft
-scrolls it. Buttons on aircraft: **A** position/proximity report, **B** landing
+supported. Wait for protocol 2 compatibility, Heartbeat: OK, and LINK ACTIVE.
+Type `AIR101 HOLD` and press SEND. **ACK RECEIVED** confirms aircraft firmware
+accepted the text for LED display. A timeout leaves reception unconfirmed.
+Use **Cancel pending text** to stop further attempts once ground confirms
+cancellation. Buttons on aircraft: **A** position/proximity report, **B** landing
 request, **A+B** MAYDAY. Aircraft scrolls confirmation of its event delivery.
 Ground **A** toggles sampling; **B** displays link/sensor status.
 
 The console includes a fixed forward sonar marker, obstacle alerts, independent
 radio information, latest/average/min/max RTT, rolling packet loss, RSSI and sonar
 history, timestamped communications, presets, diagnostics and reconnect attempts.
-MAYDAY remains visible until manually cleared. Last 120 samples/probes and last
-500 log lines are held in memory; this release has no persistent flight recorder.
+MAYDAY stays latched across USB disconnect and reconnect within the running app.
+**Acknowledge MAYDAY** clears it. The most recent 120 samples/probes and 500 log
+lines are held in memory.
 
 ## Firmware and wiring
 
@@ -114,8 +122,10 @@ docs/             protocol, wiring, physical limits, demo screenshot
 
 UI timers service a bounded nonblocking serial read and short command writes;
 no serial read waits for a newline. Disconnection clears pending commands and
-marks state stale. Reconnection tries the selected port every 3 seconds. Commands
-are disabled until a compatible HELLO arrives. Radio reception is independent of
+marks telemetry stale. Reconnection tries the selected port every 3 seconds.
+Commands require a compatible HELLO and a fresh ground heartbeat. Ground text
+transmission has its own deadline so queued commands expire before the desktop
+times out, including if USB disconnects. Radio reception is independent of
 LED scrolling fibers. Every queue, message, fragment buffer and history is bounded.
 The `RangingProvider` protocol is an extension point for **actual** UWB/GPS
 adapters; future providers must retain their source, confidence, validity and
@@ -128,6 +138,7 @@ This is a classroom/LEGO demonstration, not an operational aviation control syst
 ## Tests and verification
 
 ```powershell
+npm ci --prefix tools --ignore-scripts
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m radar_mic.app --smoke-test
 node tests/radio.test.cjs
@@ -136,15 +147,12 @@ node tests/radio.test.cjs
 Linux development uses `python3 -m venv .venv`, `.venv/bin/pip install -e '.[dev]'`,
 and `QT_QPA_PLATFORM=offscreen .venv/bin/python -m radar_mic.app --smoke-test`.
 The smoke command renders a simulated emergency and exits automatically; ordinary
-startup has no timer to exit. Host radio tests execute the actual shared and
-role-specific TypeScript with deterministic MakeCode API stubs, including PC to
-aircraft delivery and ACK, reordered/lost/duplicate fragments, retries, timeouts,
-bounds, command replay/conflict, emergency and RTT success/loss.
+startup has no timer to exit. Host tests execute the firmware TypeScript with deterministic device I/O.
+The cross-runtime tests capture raw ground firmware serial bytes and decode them
+with the desktop parser. Install Node.js 24+ and the tooling above to run those
+tests with pytest. GitHub Actions also runs them in the firmware build job.
 
-Development verification: 19 Python tests passed, transport and firmware integration
-host tests passed, both MakeCode projects compiled to HEX, and the desktop started
-and rendered an offscreen simulated emergency. Windows packaging is automated in
-CI; a Linux desktop run does not prove Windows USB or packaging behavior.
-**No physical micro:bits were tested.** Follow the bench checklist before use.
-Sonar zero cannot distinguish a failed sensor from no echo. Only a missing sensor
-stream is detectable as UNAVAILABLE; radio monitoring remains independent.
+**Physical micro:bits have not been tested.** Follow the bench checklist before
+use. Sonar zero cannot distinguish a failed sensor from no echo. Only a missing
+sensor stream is detectable as UNAVAILABLE, while radio monitoring remains
+independent.
