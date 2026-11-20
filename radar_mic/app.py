@@ -127,6 +127,7 @@ class Window(QMainWindow):
         self.mode.currentIndexChanged.connect(self.change_mode)
         top.addWidget(self.mode)
         self.port_box = QComboBox(); self.port_box.setEditable(True)
+        self.port_box.lineEdit().setPlaceholderText("COM3")
         top.addWidget(self.port_box, 1)
         top.addWidget(button("Discover ports", self.refresh_ports))
         top.addWidget(button("Connect", self.connect_port))
@@ -216,10 +217,23 @@ class Window(QMainWindow):
         self.history.appendPlainText(f"{stamp} {'[SIM] ' if self.sim else ''}{text}")
 
     def refresh_ports(self):
-        old = self.port_box.currentText()
+        selected = self.selected_port()
         self.port_box.clear()
-        for device, label in ports(): self.port_box.addItem(label, device)
-        if self.port_box.count() == 0: self.port_box.setEditText(old or "COM3")
+        for device, label in ports():
+            self.port_box.addItem(label, device)
+        index = self.port_box.findData(selected)
+        if index >= 0:
+            self.port_box.setCurrentIndex(index)
+        elif selected:
+            self.port_box.setCurrentIndex(-1)
+            self.port_box.setEditText(selected)
+
+    def selected_port(self):
+        index = self.port_box.currentIndex()
+        text = self.port_box.currentText()
+        if index >= 0 and text == self.port_box.itemText(index):
+            return self.port_box.itemData(index)
+        return text
 
     def change_mode(self, index):
         self.disconnect_port()
@@ -239,7 +253,7 @@ class Window(QMainWindow):
         if self.sim: return
         self.want_connection = True
         try:
-            name = self.port_box.currentData() if self.port_box.currentIndex() >= 0 and self.port_box.currentText() == self.port_box.itemText(self.port_box.currentIndex()) else self.port_box.currentText()
+            name = self.selected_port() or "COM3"
             if self.serial.port:
                 self.close_link(cancel=True)
             self.serial.open(name)
@@ -274,23 +288,29 @@ class Window(QMainWindow):
         self.state.tick(now)
         if not self.state.compatible or not self.state.heartbeat_alive(now):
             self.log(f"Command unavailable — waiting for protocol {VERSION} and a fresh ground heartbeat")
-            return
+            return False
         try:
             command_fields = (*self.state.text_lease(), *fields) if kind == "TEXT" else fields
             ident = self.delivery.command(kind, *command_fields, now=now)
             self.log(f"TX {ident} {kind}: {' '.join(fields)}")
-        except (OSError, ValueError) as e: self.log(str(e))
+            return True
+        except (OSError, ValueError) as e:
+            self.log(str(e))
+            return False
 
     def set_threshold(self):
         self.state.threshold = self.threshold.value()
         self.command("THRESH", str(self.state.threshold))
 
     def transmit(self, text):
-        if not valid_text(text): self.log("Use 1–80 printable ASCII characters without |")
-        else: self.command("TEXT", text)
+        if not valid_text(text):
+            self.log("Use 1–80 printable ASCII characters without |")
+            return False
+        return self.command("TEXT", text)
 
     def send_text(self):
-        self.transmit(self.message.text()); self.message.clear()
+        if self.transmit(self.message.text()):
+            self.message.clear()
 
     def tick(self):
         now = monotonic()
