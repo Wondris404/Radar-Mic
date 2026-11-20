@@ -64,3 +64,44 @@ def test_hardware_mayday_survives_serial_failure_reconnect_and_mode_change(monke
     w.render_state()
     assert not w.alert.text()
     w.close()
+
+
+def test_send_text_keeps_draft_until_the_command_is_queued():
+    app = QApplication.instance() or QApplication([])
+    w = Window(demo=True)
+    w.timer.stop()
+    w.message.setText("status request")
+    w.send_text()
+    assert w.message.text() == "status request"
+
+    w.tick()
+    w.message.setText("bad|draft")
+    w.send_text()
+    assert w.message.text() == "bad|draft"
+    assert not w.delivery.pending
+
+    w.message.setText("status request")
+    w.send_text()
+    assert w.message.text() == ""
+    assert len(w.delivery.pending) == 1
+    w.close()
+
+
+def test_refresh_ports_preserves_the_selected_device_or_manual_path(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    discovered = [("COM9", "COM9 — first adapter"), ("COM7", "COM7 — second adapter")]
+    monkeypatch.setattr("radar_mic.app.ports", lambda: discovered)
+    w = Window()
+    w.timer.stop()
+    w.port_box.setCurrentIndex(1)
+    w.refresh_ports()
+    assert w.selected_port() == "COM7"
+
+    discovered.pop()
+    w.refresh_ports()
+    assert w.selected_port() == "COM7"
+
+    w.port_box.setEditText("COM12")
+    w.refresh_ports()
+    assert w.selected_port() == "COM12"
+    w.close()
